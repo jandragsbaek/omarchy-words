@@ -1,4 +1,4 @@
-# WPM for Omarchy
+# Words for Omarchy
 
 Live words-per-minute from **actual keyboard input**, attributed to the
 active Hyprland window. Git-style `+insertions −deletions` per app, a
@@ -10,10 +10,10 @@ It never stores the text you type — only counts.
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/jandragsbaek/omarchy-wpm.git --enable --yes
+omarchy plugin add https://github.com/jandragsbaek/omarchy-words.git --enable --yes
 ```
 
-The widget lands on the right of the bar. Move it with `omarchy bar move jandragsbaek.wpm`.
+The widget lands on the right of the bar. Move it with `omarchy bar move jandragsbaek.words`.
 
 ## Keyboard access
 
@@ -23,7 +23,7 @@ The daemon reads `/dev/input` (evdev). Your user must be in the `input` group:
 sudo usermod -aG input $USER
 ```
 
-Then log out and back in. Until that is done, the bar shows `WPM setup`.
+Then log out and back in. Until that is done, the bar shows setup.
 
 **Honest limit:** the `input` group is still keylogger-level at the OS.
 Any other process running as you can open `/dev/input`. This plugin cannot
@@ -54,8 +54,9 @@ Right-click the bar chip to pause or resume. Middle-click exports today's Markdo
 
 ## Panel
 
-Click the chip. When idle the hero is today's word count; while typing it is
-live WPM. Combined spark for the day, up to ten activity rows (click to solo).
+Click the chip. The hero is today's word count; burst and session WPM sit on
+the right. Live WPM stays on the bar chip. Combined spark for the day, up to
+ten activity rows (click to solo).
 **Y** opens the GitHub-style year chart. **O** opens today's full list; **R**
 opens week/month/year/all. Keys:
 
@@ -63,6 +64,7 @@ opens week/month/year/all. Keys:
 |---|---|
 | `Y` | Expand / collapse the year frequency chart |
 | `O` | Open today's full list in a browser tab |
+| `G` | Open goals (read-only). Click a goal to edit it. Accept saves; `G` / Esc leaves. |
 | `R` | Open week / month / year / all report in a browser tab |
 | `E` | Export today's Markdown |
 | `P` | Pause / resume |
@@ -76,8 +78,8 @@ manifest. The widget settings UI and `omarchy bar set` both write that
 entry. Numbers need `--json` so they stay numbers:
 
 ```sh
-omarchy bar set jandragsbaek.wpm goalWords 1000 --json
-omarchy bar set jandragsbaek.wpm goalMatch obsidian
+omarchy bar set jandragsbaek.words goalWords 1000 --json
+omarchy bar set jandragsbaek.words goalMatch obsidian
 ```
 
 `goalMatch` can be:
@@ -95,7 +97,7 @@ omarchy bar set jandragsbaek.wpm goalMatch obsidian
 Several goals at once (same pattern as nested JSON on first-party widgets):
 
 ```sh
-omarchy bar set jandragsbaek.wpm goals '[
+omarchy bar set jandragsbaek.words goals '[
   {"match":"obsidian","words":1000,"label":"Obsidian"},
   {"match":"site:x","words":500,"label":"X"},
   {"match":"herdr:grok build","words":200,"label":"Grok Build"}
@@ -133,7 +135,7 @@ The plugin owns only this block, and will not touch the rest of the note:
 
 ## Data
 
-- SQLite: `~/.local/state/omarchy/plugins/jandragsbaek.wpm/wpm.sqlite`
+- SQLite: `~/.local/state/omarchy/plugins/jandragsbaek.words/wpm.sqlite`
   (a previous `jan.wpm` database is copied here on first launch)
 - Config: `~/.config/omarchy/omawpm.json`
 - Live status: `$XDG_RUNTIME_DIR/omawpm/status.json` (mode 0600)
@@ -160,7 +162,7 @@ need `--remote-debugging-port` and would see URLs and page content.
 ## Development
 
 Work in this repo (`~/src/omarchy-wpm`). Do **not** rsync or copy the tree
-into `~/.config/omarchy/plugins/jandragsbaek.wpm` while `omarchy-shell` is running.
+into `~/.config/omarchy/plugins/jandragsbaek.words` while `omarchy-shell` is running.
 Each write retriggers a plugin reload; Omarchy tears down every service
 including the lock, and Quickshell can abort (Omarchy #7106 / #8647).
 `qmllint` complaining about `function exportNote(): void` on `IpcHandler`

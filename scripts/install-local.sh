@@ -7,11 +7,10 @@
 # (basecamp/omarchy #7106 / #8647).
 set -euo pipefail
 
-PLUGIN_ID="jandragsbaek.wpm"
-LEGACY_ID="jan.wpm"
+PLUGIN_ID="jandragsbaek.words"
+LEGACY_IDS="jan.wpm jandragsbaek.wpm"
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${HOME}/.config/omarchy/plugins/${PLUGIN_ID}"
-LEGACY_TARGET="${HOME}/.config/omarchy/plugins/${LEGACY_ID}"
 RESTART_SHELL=0
 
 usage() {
@@ -89,28 +88,36 @@ fi
 rm -rf "${stage}.old"
 trap - EXIT
 
-if [[ -e $LEGACY_TARGET && $LEGACY_TARGET != "$TARGET" ]]; then
-  rm -rf "$LEGACY_TARGET"
-  echo "Removed legacy plugin dir ${LEGACY_TARGET}"
-fi
+for legacy in $LEGACY_IDS; do
+  legacy_dir="${HOME}/.config/omarchy/plugins/${legacy}"
+  if [[ -e $legacy_dir && $legacy_dir != "$TARGET" ]]; then
+    rm -rf "$legacy_dir"
+    echo "Removed legacy plugin dir ${legacy_dir}"
+  fi
+done
 
-python3 - "$PLUGIN_ID" "$LEGACY_ID" <<'PY'
+python3 - "$PLUGIN_ID" $LEGACY_IDS <<'PY'
 import json, shutil, sqlite3, sys
 from pathlib import Path
-plugin_id, legacy_id = sys.argv[1], sys.argv[2]
+plugin_id = sys.argv[1]
+legacy_ids = sys.argv[2:]
 state = Path.home() / ".local/state/omarchy/plugins"
-old = state / legacy_id / "wpm.sqlite"
 new = state / plugin_id / "wpm.sqlite"
-if old.exists() and not new.exists():
-    try:
-        conn = sqlite3.connect(str(old))
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.close()
-    except sqlite3.Error:
-        pass
-    new.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(old, new)
-    print(f"Migrated SQLite {old} -> {new}")
+if not new.exists():
+    for legacy_id in reversed(legacy_ids):
+        old = state / legacy_id / "wpm.sqlite"
+        if not old.exists():
+            continue
+        try:
+            conn = sqlite3.connect(str(old))
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.close()
+        except sqlite3.Error:
+            pass
+        new.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(old, new)
+        print(f"Migrated SQLite {old} -> {new}")
+        break
 shell = Path.home() / ".config/omarchy/shell.json"
 if shell.exists():
     data = json.loads(shell.read_text())
@@ -120,12 +127,12 @@ if shell.exists():
         if not isinstance(section, list):
             continue
         for entry in section:
-            if isinstance(entry, dict) and entry.get("id") == legacy_id:
+            if isinstance(entry, dict) and entry.get("id") in legacy_ids:
                 entry["id"] = plugin_id
                 changed = True
     if changed:
         shell.write_text(json.dumps(data, indent=2) + "\n")
-        print(f"Updated bar layout id {legacy_id} -> {plugin_id}")
+        print(f"Updated bar layout id -> {plugin_id}")
 PY
 
 echo "Installed ${PLUGIN_ID} at ${TARGET}"

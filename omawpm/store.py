@@ -707,7 +707,7 @@ def migrate_legacy_db(dest: Path) -> None:
     if dest.exists():
         return
     state_root = dest.parent.parent
-    for legacy in LEGACY_PLUGIN_IDS:
+    for legacy in reversed(LEGACY_PLUGIN_IDS):
         old = state_root / legacy / "wpm.sqlite"
         if not old.exists():
             continue

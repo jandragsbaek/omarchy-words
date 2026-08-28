@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "jandragsbaek.wpm",
-  "name": "WPM",
-  "version": "0.1.0",
+  "id": "jandragsbaek.words",
+  "name": "Words",
+  "version": "1.0.0",
   "author": "jandragsbaek",
   "license": "MIT",
-  "description": "Live WPM from actual keystrokes, per window, with git-style diffs and a daily Obsidian writing goal.",
+  "description": "Word counts from actual keystrokes, per window and site, with live WPM, goals, and git-style diffs.",
   "kinds": [
     "service",
     "bar-widget"
@@ -15,8 +15,8 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "WPM",
-    "description": "Typing speed, per-app git diffs, and a daily word goal",
+    "displayName": "Words",
+    "description": "Word counts from real typing, with live WPM and configurable goals",
     "category": "Productivity",
     "defaultSection": "right",
     "allowMultiple": false,

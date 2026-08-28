@@ -1,6 +1,6 @@
 import unittest
 
-from omawpm.goals import counts_for_match, parse_goals, score_goals
+from omawpm.goals import counts_for_match, counts_for_matches, parse_goals, score_goals
 
 
 APPS = [{"app_class": "obsidian", "inserted_words": 40, "deleted_words": 4, "net_words": 36, "inserted_chars": 200, "deleted_chars": 10, "net_chars": 190}]
@@ -14,7 +14,9 @@ TOTAL = {"inserted_words": 130, "deleted_words": 16, "net_words": 114}
 class ParseTests(unittest.TestCase):
     def test_single_from_match_fields(self):
         goals = parse_goals({"goalMatch": "obsidian", "goalWords": 1000})
-        self.assertEqual(goals, [{"match": "obsidian", "target": 1000, "label": "obsidian"}])
+        self.assertEqual(goals[0]["match"], "obsidian")
+        self.assertEqual(goals[0]["target"], 1000)
+        self.assertEqual(goals[0]["matches"], ["obsidian"])
 
     def test_legacy_app_class(self):
         goals = parse_goals({"goalAppClass": "obsidian", "goalWords": 500})
@@ -36,11 +38,42 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(goals[0]["label"], "Notes")
         self.assertEqual(goals[1]["match"], "herdr:grok build")
 
+    def test_match_list_union(self):
+        goals = parse_goals(
+            {
+                "goals": [
+                    {"match": ["obsidian", "site:x"], "words": 500, "label": "Write"},
+                ]
+            }
+        )
+        self.assertEqual(goals[0]["matches"], ["obsidian", "site:x"])
+        c = counts_for_matches(goals[0]["matches"], APPS, ACTIVITIES, HERDR, HYPR, TOTAL, SITES)
+        self.assertEqual(c["net_words"], 81)
+
 
 class CountTests(unittest.TestCase):
     def test_bare_class(self):
         c = counts_for_match("obsidian", APPS, ACTIVITIES, HERDR, HYPR, TOTAL)
         self.assertEqual(c["net_words"], 36)
+
+    def test_reverse_dns_obsidian_matches_bare_name(self):
+        apps = [{"app_class": "md.obsidian.Obsidian", "inserted_words": 10, "deleted_words": 2, "net_words": 8}]
+        c = counts_for_match("obsidian", apps, [], [], [])
+        self.assertEqual(c["net_words"], 8)
+        c = counts_for_match("class:md.obsidian.Obsidian", apps, [], [], [])
+        self.assertEqual(c["net_words"], 8)
+
+    def test_class_and_activity_same_window_not_double_counted(self):
+        apps = [{"app_class": "md.obsidian.Obsidian", "inserted_words": 10, "deleted_words": 2, "net_words": 8}]
+        acts = [{"name": "md.obsidian.Obsidian", "inserted_words": 10, "deleted_words": 2, "net_words": 8}]
+        c = counts_for_matches(
+            ["class:md.obsidian.Obsidian", "activity:md.obsidian.Obsidian"],
+            apps,
+            acts,
+            [],
+            [],
+        )
+        self.assertEqual(c["net_words"], 8)
 
     def test_herdr_prefix(self):
         c = counts_for_match("herdr:grok build", APPS, ACTIVITIES, HERDR, HYPR, TOTAL)

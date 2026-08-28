@@ -6,8 +6,8 @@ import "Model.js" as Model
 
 Panel {
   id: root
-  moduleName: "jandragsbaek.wpm"
-  ipcTarget: "jandragsbaek.wpm"
+  moduleName: "jandragsbaek.words"
+  ipcTarget: "jandragsbaek.words"
   manageIpc: false
 
   property var anchorItem: null
@@ -16,6 +16,12 @@ Panel {
   readonly property var barIdentity: hostWidget || root
 
   property bool yearOpen: false
+  property bool goalsOpen: false
+  property var draftGoals: []
+  property int selectedGoal: -1
+  property int editingGoal: -1
+  property int pickingFor: -1
+  property bool goalFieldFocused: false
   property string soloActivity: ""
   readonly property int listLimit: 10
 
@@ -48,6 +54,15 @@ Panel {
   )
   readonly property int overflowCount: Math.max(0, activityRows.length - listLimit)
   readonly property var goals: Model.goalList(status)
+  readonly property int goalCount: {
+    var list = goals
+    return list && list.length ? list.length : 0
+  }
+  readonly property bool canAcceptGoal: {
+    var i = root.editingGoal
+    if (i < 0 || i >= draftGoals.length) return false
+    return Model.goalCanAccept(draftGoals[i])
+  }
   readonly property var sparkline: status.sparkline || { now_minute: 0, max: 0, series: [] }
   readonly property var graph: status.graph || { max: 0, cells: [] }
   readonly property var columns: Model.graphColumns(graph.cells || [])
@@ -67,7 +82,6 @@ Panel {
 
   readonly property bool setupMode: status.state === "need_input_group"
   readonly property bool pausedMode: status.state === "paused"
-  readonly property int liveWpm: Math.round(Number(status.live_wpm || 0))
   readonly property int burstWpm: Math.round(Number(status.last_burst_wpm || 0))
   readonly property int sessionWpm: Math.round(Number(status.session_wpm || 0))
   readonly property int todayWords: {
@@ -78,18 +92,14 @@ Panel {
   }
   readonly property int heroValue: {
     if (setupMode) return 0
-    if (liveWpm > 0) return liveWpm
-    if (todayWords > 0) return todayWords
-    return sessionWpm
+    return todayWords
   }
   readonly property string heroUnit: {
     if (setupMode) return "setup"
-    if (liveWpm > 0) return "WPM"
-    if (todayWords > 0) return "today"
-    return "WPM"
+    return "today"
   }
-  readonly property bool showBurst: burstWpm > 0 && burstWpm !== liveWpm
-  readonly property bool showSession: sessionWpm > 0 && (liveWpm > 0 ? sessionWpm !== liveWpm : true)
+  readonly property bool showBurst: burstWpm > 0
+  readonly property bool showSession: sessionWpm > 0
   readonly property bool hasTyping: activityRows.length > 0 || Number(sparkline.max || 0) > 0
   readonly property var combinedSpark: Model.combinedSeries(sparkline)
   readonly property var activeSpark: {
@@ -123,8 +133,183 @@ Panel {
   function close() {
     setCenterHoverRevealSuppressed(false)
     root.yearOpen = false
+    if (root.goalsOpen) finishGoals()
     root.soloActivity = ""
     root.controller.hide()
+  }
+
+  function editorState() {
+    return {
+      open: root.goalsOpen,
+      selected: root.selectedGoal,
+      editing: root.editingGoal,
+      fieldFocused: root.goalFieldFocused
+    }
+  }
+
+  function runGoalsCommand(command, index) {
+    var count = root.goalsOpen ? draftGoals.length : (goals || []).length
+    var result = Model.applyGoalsCommand(editorState(), command, count, index)
+    applyEditorResult(result)
+  }
+
+  function applyEditorResult(result) {
+    if (!result || !result.state) return
+    if (result.action === "open") {
+      root.yearOpen = false
+      root.draftGoals = Model.cloneDraftGoals(goals)
+    }
+    if (result.action === "close") finishGoals()
+    if (result.action === "accept") acceptGoalEdits()
+    var s = result.state
+    root.goalsOpen = s.open
+    root.selectedGoal = Model.clampIndex(s.selected, draftGoals.length)
+    root.editingGoal = s.editing
+    root.pickingFor = s.editing
+    root.goalFieldFocused = s.fieldFocused
+    if (result.action === "close" || result.action === "select" || result.action === "edit" || result.action === "accept")
+      Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+  }
+
+  function acceptGoalEdits() {
+    var idx = root.editingGoal
+    if (idx >= 0 && idx < draftGoals.length) {
+      var m = draftGoals[idx].matches || []
+      if (!m.length) {
+        var next = draftGoals.slice()
+        next.splice(idx, 1)
+        root.draftGoals = next
+      }
+    }
+    persistGoals()
+    root.goalFieldFocused = false
+    if (keyCatcher) keyCatcher.forceActiveFocus()
+  }
+
+  function finishGoals() {
+    if (keyCatcher) keyCatcher.forceActiveFocus()
+    root.goalFieldFocused = false
+    persistGoals()
+    root.goalsOpen = false
+    root.selectedGoal = -1
+    root.editingGoal = -1
+    root.pickingFor = -1
+  }
+
+  function openGoals() {
+    runGoalsCommand("open")
+  }
+
+  function persistGoals() {
+    var payload = Model.goalsPayload(draftGoals)
+    if (!payload.length && draftGoals.length)
+      return
+    if (root.service && root.service.setGoals)
+      root.service.setGoals(JSON.stringify(payload))
+  }
+
+  function addSource(match, label) {
+    var next = draftGoals.slice()
+    var idx = root.pickingFor
+    if (idx >= 0 && idx < next.length && Model.matchCovered(next[idx].matches, match)) {
+      removeSource(idx, match)
+      return
+    }
+    if (idx < 0 || idx >= next.length) {
+      next.push({
+        label: label || Model.matchLabel(match),
+        target: 500,
+        matches: [match],
+        net_words: 0,
+        percent: 0
+      })
+      idx = next.length - 1
+    } else {
+      var g = {
+        label: next[idx].label,
+        target: next[idx].target,
+        matches: (next[idx].matches || []).slice(),
+        net_words: next[idx].net_words,
+        percent: next[idx].percent
+      }
+      if (!Model.matchCovered(g.matches, match)) g.matches.push(match)
+      if (!g.label || g.label === "New goal") g.label = label || Model.matchLabel(match)
+      next[idx] = g
+    }
+    root.draftGoals = next
+    root.selectedGoal = idx
+    root.editingGoal = idx
+    root.pickingFor = idx
+    persistGoals()
+    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+  }
+
+  function addNewGoal() {
+    var next = draftGoals.slice()
+    next.push({
+      label: "New goal",
+      target: 500,
+      matches: [],
+      net_words: 0,
+      percent: 0
+    })
+    root.draftGoals = next
+    root.selectedGoal = next.length - 1
+    root.editingGoal = next.length - 1
+    root.pickingFor = next.length - 1
+    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+  }
+
+  function removeSource(goalIndex, match) {
+    var next = draftGoals.slice()
+    var id = Model.matchIdentity(match)
+    var g = {
+      label: next[goalIndex].label,
+      target: next[goalIndex].target,
+      matches: (next[goalIndex].matches || []).filter(function(m) { return Model.matchIdentity(m) !== id }),
+      net_words: next[goalIndex].net_words,
+      percent: next[goalIndex].percent
+    }
+    if (!g.matches.length) next.splice(goalIndex, 1)
+    else next[goalIndex] = g
+    root.draftGoals = next
+    syncGoalCursor(next.length)
+    persistGoals()
+  }
+
+  function removeGoal(goalIndex) {
+    var next = draftGoals.slice()
+    next.splice(goalIndex, 1)
+    root.draftGoals = next
+    if (root.editingGoal === goalIndex) root.editingGoal = -1
+    else if (root.editingGoal > goalIndex) root.editingGoal -= 1
+    syncGoalCursor(next.length)
+    persistGoals()
+  }
+
+  function syncGoalCursor(count) {
+    root.selectedGoal = Model.clampIndex(root.selectedGoal, count)
+    if (root.editingGoal >= count) root.editingGoal = -1
+    root.pickingFor = root.editingGoal
+  }
+
+  function setGoalField(goalIndex, key, value) {
+    if (goalIndex < 0 || goalIndex >= draftGoals.length) return
+    draftGoals[goalIndex][key] = value
+  }
+
+  function commitGoalFromField() {
+    runGoalsCommand("accept")
+  }
+
+  function handleGoalFieldKey(event) {
+    if (event.key === Qt.Key_Escape) {
+      event.accepted = true
+      runGoalsCommand("done")
+    } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+      event.accepted = true
+      root.commitGoalFromField()
+    }
   }
 
   function toggleSolo(name) {
@@ -203,11 +388,29 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: root.close()
+      blocked: root.goalFieldFocused
+      onCloseRequested: {
+        if (root.goalsOpen) root.runGoalsCommand("done")
+        else root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      onActivateRequested: root.yearOpen = !root.yearOpen
+      onMoveRequested: function(dx, dy) {
+        if (!root.goalsOpen) return
+        if (dy < 0) root.runGoalsCommand("up")
+        else if (dy > 0) root.runGoalsCommand("down")
+      }
+      onActivateRequested: {
+        if (root.goalsOpen && root.editingGoal >= 0) root.runGoalsCommand("accept")
+        else if (root.goalsOpen) root.runGoalsCommand("edit")
+        else root.yearOpen = !root.yearOpen
+      }
+      onDeleteRequested: {
+        if (root.goalsOpen && root.selectedGoal >= 0)
+          root.removeGoal(root.selectedGoal)
+      }
       onTextKey: function(t) {
-        if (t === "y" || t === "Y") root.yearOpen = !root.yearOpen
+        if (t === "g" || t === "G") root.runGoalsCommand("g")
+        else if (t === "y" || t === "Y") root.yearOpen = !root.yearOpen
         else if (t === "e" || t === "E") { if (root.service) root.service.exportNote() }
         else if (t === "o" || t === "O") { if (root.service) root.service.explore() }
         else if (t === "r" || t === "R") { if (root.service) root.service.report() }
@@ -266,7 +469,7 @@ Panel {
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(2)
-              visible: root.setupMode || root.pausedMode || root.showBurst || root.showSession || (root.todayWords > 0 && root.liveWpm > 0) || root.aiWords > 0
+              visible: root.setupMode || root.pausedMode || root.showBurst || root.showSession || root.aiWords > 0
 
               Text {
                 visible: root.setupMode
@@ -305,15 +508,6 @@ Panel {
               }
 
               Text {
-                visible: root.todayWords > 0 && root.liveWpm > 0 && !root.setupMode
-                text: root.todayWords + " today"
-                color: contentMuted
-                font.family: contentFontFamily
-                font.pixelSize: Style.font.bodySmall
-                horizontalAlignment: Text.AlignRight
-              }
-
-              Text {
                 visible: root.aiWords > 0 && !root.setupMode
                 text: root.aiWords + " AI"
                 color: contentMuted
@@ -334,41 +528,43 @@ Panel {
             font.pixelSize: Style.font.bodySmall
           }
 
-          // Goals with progress get a bar. Empty goals stay out of the way while you're writing elsewhere.
           Column {
             width: parent.width
             spacing: Style.space(6)
-            visible: {
-              if (!(goals && goals.length) || Number((goals[0] && goals[0].target) || 0) <= 0)
-                return false
-              if (!root.hasTyping) return true
-              for (var i = 0; i < goals.length; i++)
-                if (Number(goals[i].net_words || 0) > 0) return true
-              return false
-            }
+            visible: !root.goalsOpen && root.goalCount > 0
 
             Repeater {
-              model: goals
+              model: root.goalCount
 
               Column {
-                required property var modelData
                 required property int index
+                readonly property var goal: (root.goals && root.goals[index]) ? root.goals[index] : ({})
                 width: body.width
                 spacing: Style.space(3)
-                visible: Number(modelData.net_words || 0) > 0 || !root.hasTyping
-                readonly property bool emptyGoal: Number(modelData.net_words || 0) <= 0
+                readonly property bool emptyGoal: Number(goal.net_words || 0) <= 0
 
                 Item {
                   width: parent.width
                   height: goalName.implicitHeight
 
                   Text {
-                    id: goalName
+                    id: goalGlyph
                     anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: Model.ICON_GOAL
+                    color: emptyGoal ? contentMuted : contentAccent
+                    font.family: contentFontFamily
+                    font.pixelSize: Style.font.body
+                  }
+
+                  Text {
+                    id: goalName
+                    anchors.left: goalGlyph.right
+                    anchors.leftMargin: Style.space(8)
                     anchors.right: goalCount.left
                     anchors.rightMargin: Style.space(10)
                     elide: Text.ElideRight
-                    text: Model.displayName(String(modelData.label || modelData.match || ""))
+                    text: Model.displayName(String(goal.label || goal.match || ""))
                     color: emptyGoal ? contentMuted : contentForeground
                     font.family: contentFontFamily
                     font.pixelSize: Style.font.body
@@ -378,10 +574,16 @@ Panel {
                   Text {
                     id: goalCount
                     anchors.right: parent.right
-                    text: Number(modelData.net_words || 0) + " / " + Number(modelData.target || 0)
-                    color: Number(modelData.percent || 0) >= 100 ? plusColor : (emptyGoal ? contentMuted : contentForeground)
+                    text: Number(goal.net_words || 0) + " / " + Number(goal.target || 0)
+                    color: Number(goal.percent || 0) >= 100 ? plusColor : (emptyGoal ? contentMuted : contentForeground)
                     font.family: contentFontFamily
                     font.pixelSize: Style.font.body
+                  }
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.openGoals()
                   }
                 }
 
@@ -389,11 +591,10 @@ Panel {
                   width: parent.width
                   height: 3
                   radius: 1
-                  visible: !emptyGoal
                   color: Util.alpha(contentForeground, 0.08)
 
                   Rectangle {
-                    width: parent.width * Math.min(1, Number(modelData.percent || 0) / 100)
+                    width: parent.width * Math.min(1, Number(goal.percent || 0) / 100)
                     height: parent.height
                     radius: parent.radius
                     color: contentAccent
@@ -403,11 +604,334 @@ Panel {
             }
           }
 
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: root.goalsOpen
+
+            Item {
+              width: parent.width
+              height: goalsHead.implicitHeight
+
+              Text {
+                id: goalsHead
+                text: "GOALS"
+                color: contentMuted
+                font.family: contentFontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.letterSpacing: 1.2
+              }
+
+              Text {
+                anchors.right: parent.right
+                text: "G done"
+                color: contentAccent
+                font.family: contentFontFamily
+                font.pixelSize: Style.font.bodySmall
+                MouseArea {
+                  anchors.fill: parent
+                  anchors.margins: -6
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.runGoalsCommand("done")
+                }
+              }
+            }
+
+            Text {
+              visible: root.editingGoal < 0
+              width: parent.width
+              wrapMode: Text.WordWrap
+              text: draftGoals.length ? "select a goal to edit" : "add a goal, then pick windows"
+              color: contentMuted
+              font.family: contentFontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Repeater {
+              model: draftGoals
+
+              Column {
+                id: goalCard
+                required property var modelData
+                required property int index
+                width: body.width
+                spacing: Style.space(4)
+                readonly property bool selected: root.selectedGoal === index
+                readonly property bool editing: root.editingGoal === index
+
+                Rectangle {
+                  width: parent.width
+                  height: goalRow.implicitHeight + Style.space(8)
+                  radius: Style.space(4)
+                  color: goalCard.selected ? selectedFill : "transparent"
+
+                  Item {
+                    id: goalRow
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Style.space(6)
+                    anchors.rightMargin: Style.space(6)
+                    height: Math.max(goalPickName.implicitHeight, goalPickCount.implicitHeight)
+
+                    Text {
+                      id: goalPickName
+                      anchors.left: parent.left
+                      anchors.right: goalPickCount.left
+                      anchors.rightMargin: Style.space(10)
+                      anchors.verticalCenter: parent.verticalCenter
+                      elide: Text.ElideRight
+                      text: Model.displayName(String(modelData.label || ""))
+                      color: goalCard.selected ? contentForeground : contentMuted
+                      font.family: contentFontFamily
+                      font.pixelSize: Style.font.body
+                      font.bold: goalCard.selected
+                    }
+
+                    Text {
+                      id: goalPickCount
+                      anchors.right: goalRemove.left
+                      anchors.rightMargin: Style.space(10)
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: Number(modelData.net_words || 0) + " / " + Number(modelData.target || 0)
+                      color: contentForeground
+                      font.family: contentFontFamily
+                      font.pixelSize: Style.font.body
+                    }
+
+                    Text {
+                      id: goalRemove
+                      anchors.right: parent.right
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: "✕"
+                      color: contentMuted
+                      font.family: contentFontFamily
+                      font.pixelSize: Style.font.body
+                      MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -6
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.removeGoal(index)
+                      }
+                    }
+
+                    MouseArea {
+                      anchors.left: parent.left
+                      anchors.right: goalRemove.left
+                      anchors.top: parent.top
+                      anchors.bottom: parent.bottom
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.runGoalsCommand("click", index)
+                    }
+                  }
+                }
+
+                Column {
+                  width: parent.width
+                  spacing: Style.space(6)
+                  visible: goalCard.editing
+                  enabled: goalCard.editing
+
+                  Row {
+                    width: parent.width
+                    spacing: Style.space(8)
+
+                    TextField {
+                      width: parent.width - Style.space(70) - Style.space(26) - parent.spacing * 2
+                      text: String(modelData.label || "")
+                      placeholderText: "Label"
+                      foreground: contentForeground
+                      accent: contentAccent
+                      font.family: contentFontFamily
+                      font.pixelSize: Style.font.body
+                      verticalPadding: Style.space(4)
+                      Keys.priority: Keys.BeforeItem
+                      onActiveFocusChanged: root.goalFieldFocused = activeFocus
+                      onTextChanged: root.setGoalField(index, "label", text)
+                      onEditingFinished: root.persistGoals()
+                      onAccepted: root.commitGoalFromField()
+                      Keys.onPressed: function(event) { root.handleGoalFieldKey(event) }
+                    }
+
+                    TextField {
+                      width: Style.space(70)
+                      text: String(modelData.target || 0)
+                      placeholderText: "500"
+                      foreground: contentForeground
+                      accent: contentAccent
+                      font.family: contentFontFamily
+                      font.pixelSize: Style.font.body
+                      verticalPadding: Style.space(4)
+                      Keys.priority: Keys.BeforeItem
+                      onActiveFocusChanged: root.goalFieldFocused = activeFocus
+                      onTextChanged: {
+                        var n = parseInt(text, 10)
+                        root.setGoalField(index, "target", isNaN(n) ? 0 : Math.max(0, n))
+                      }
+                      onEditingFinished: root.persistGoals()
+                      onAccepted: root.commitGoalFromField()
+                      Keys.onPressed: function(event) { root.handleGoalFieldKey(event) }
+                    }
+
+                    PanelActionButton {
+                      iconText: "󰄬"
+                      tooltipText: root.canAcceptGoal ? "Accept" : "Pick a window first"
+                      foreground: contentForeground
+                      fontFamily: contentFontFamily
+                      enabled: root.canAcceptGoal
+                      onClicked: root.runGoalsCommand("accept")
+                    }
+                  }
+
+                  Flow {
+                    width: parent.width
+                    spacing: Style.space(6)
+                    property int goalIndex: index
+
+                    Repeater {
+                      model: modelData.matches || []
+
+                      Rectangle {
+                        required property var modelData
+                        height: chipLabel.implicitHeight + Style.space(4)
+                        width: chipLabel.implicitWidth + Style.space(16)
+                        radius: height / 2
+                        color: Util.alpha(contentForeground, 0.08)
+
+                        Text {
+                          id: chipLabel
+                          anchors.centerIn: parent
+                          text: Model.matchLabel(String(modelData)) + "  ×"
+                          color: contentForeground
+                          font.family: contentFontFamily
+                          font.pixelSize: Style.font.bodySmall
+                        }
+
+                        MouseArea {
+                          anchors.fill: parent
+                          cursorShape: Qt.PointingHandCursor
+                          onClicked: root.removeSource(parent.parent.goalIndex, String(modelData))
+                        }
+                      }
+                    }
+                  }
+
+                  Text {
+                    text: "pick windows below"
+                    color: contentAccent
+                    font.family: contentFontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                }
+              }
+            }
+
+            Text {
+              text: "+ new goal"
+              color: contentAccent
+              font.family: contentFontFamily
+              font.pixelSize: Style.font.body
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.addNewGoal()
+              }
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(6)
+              visible: root.editingGoal >= 0
+
+              Text {
+                text: "COUNT FROM"
+                color: contentMuted
+                font.family: contentFontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.letterSpacing: 1.2
+              }
+
+              Repeater {
+                model: Model.goalSourceOptions(status)
+
+                Item {
+                  required property var modelData
+                  width: body.width
+                  height: srcName.implicitHeight + Style.space(6)
+                  readonly property bool attached: {
+                    if (root.editingGoal < 0 || root.editingGoal >= draftGoals.length) return false
+                    return Model.matchCovered(draftGoals[root.editingGoal].matches, String(modelData.match))
+                  }
+
+                  Text {
+                    id: srcName
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: String(modelData.label || "")
+                    color: parent.attached ? contentAccent : contentForeground
+                    font.family: contentFontFamily
+                    font.pixelSize: Style.font.body
+                  }
+
+                  Text {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: parent.attached ? "✓" : String(modelData.hint || "")
+                    color: parent.attached ? contentAccent : contentMuted
+                    font.family: contentFontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+
+                  MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.addSource(String(modelData.match), String(modelData.label))
+                  }
+                }
+              }
+
+              TextField {
+                width: parent.width
+                placeholderText: "Custom match: class:foo  site:x  herdr:name"
+                foreground: contentForeground
+                accent: contentAccent
+                font.family: contentFontFamily
+                font.pixelSize: Style.font.bodySmall
+                verticalPadding: Style.space(4)
+                onActiveFocusChanged: root.goalFieldFocused = activeFocus
+                onAccepted: {
+                  var t = text.trim()
+                  if (!t) return
+                  root.addSource(t, Model.matchLabel(t))
+                  text = ""
+                }
+                Keys.onPressed: function(event) {
+                  if (event.key === Qt.Key_Escape) {
+                    event.accepted = true
+                    root.runGoalsCommand("done")
+                  }
+                }
+              }
+
+              Button {
+                width: parent.width
+                text: "Accept"
+                bordered: true
+                enabled: root.canAcceptGoal
+                foreground: contentForeground
+                accent: contentAccent
+                fontFamily: contentFontFamily
+                onClicked: root.runGoalsCommand("accept")
+              }
+            }
+          }
+
           // Today spark — focused series only. Legend is the list below.
           Column {
             width: parent.width
             spacing: Style.space(4)
-            visible: root.hasTyping
+            visible: root.hasTyping && !root.goalsOpen
 
             Item {
               width: parent.width
@@ -508,7 +1032,7 @@ Panel {
           Column {
             width: parent.width
             spacing: Style.space(4)
-            visible: root.hasTyping
+            visible: root.hasTyping && !root.goalsOpen
 
             Repeater {
               model: visibleRows
@@ -656,7 +1180,7 @@ Panel {
           Column {
             width: parent.width
             spacing: Style.space(8)
-            visible: root.yearOpen
+            visible: root.yearOpen && !root.goalsOpen
 
             Text {
               text: "YEAR"
@@ -762,6 +1286,19 @@ Panel {
                   anchors.fill: parent
                   cursorShape: Qt.PointingHandCursor
                   onClicked: if (root.service) root.service.explore()
+                }
+              }
+
+              Text {
+                text: root.goalsOpen ? "G done" : "G goals"
+                color: contentMuted
+                font.family: contentFontFamily
+                font.pixelSize: Style.font.bodySmall
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.runGoalsCommand(root.goalsOpen ? "done" : "g")
                 }
               }
 

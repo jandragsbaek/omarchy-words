@@ -144,6 +144,10 @@ var SITE_LABELS = {
   slack: "Slack"
 }
 
+// JetBrainsMono Nerd Font (same set as weather, audio, wifi).
+var ICON_WORDS = "󰧮" // nf-md-file-document-outline
+var ICON_GOAL = "󰓾" // nf-md-target
+
 var BROWSER_LEFT = {
   chromium: true,
   "chromium-browser": true,
@@ -207,6 +211,115 @@ function rowTool(name) {
   return tool
 }
 
+function matchLabel(match) {
+  match = String(match || "")
+  if (match === "all" || match === "*") return "Everything"
+  if (match.indexOf("site:") === 0) return displayName("chromium · " + match.substring(5))
+  if (match.indexOf("class:") === 0) return sourceAppLabel(match.substring(6))
+  if (match.indexOf("herdr:") === 0) return match.substring(6)
+  if (match.indexOf("activity:") === 0) return displayName(match.substring(9))
+  if (match.indexOf("ws:") === 0) return "ws " + match.substring(3)
+  if (match.indexOf("workspace:") === 0) return "ws " + match.substring(10)
+  return sourceAppLabel(match)
+}
+
+function sourceAppLabel(klass) {
+  klass = String(klass || "")
+  if (BROWSER_LEFT[klass]) return "Chromium"
+  var label = displayName(klass)
+  if (label === "Other") return "Chromium"
+  return label
+}
+
+function matchIdentity(match) {
+  match = String(match || "").trim()
+  if (!match) return ""
+  var lower = match.toLowerCase()
+  if (lower === "all" || lower === "*") return "all"
+  if (lower.indexOf("site:") === 0) return "site:" + match.substring(5).toLowerCase()
+  if (lower.indexOf("herdr:") === 0) return "herdr:" + match.substring(6).toLowerCase()
+  if (lower.indexOf("ws:") === 0) return "ws:" + match.substring(3).toLowerCase()
+  if (lower.indexOf("workspace:") === 0) return "ws:" + match.substring(10).toLowerCase()
+  var value = match
+  if (lower.indexOf("class:") === 0) value = match.substring(6)
+  else if (lower.indexOf("activity:") === 0) {
+    value = match.substring(9)
+    var bits = value.split(" · ")
+    if (bits.length > 1 && BROWSER_LEFT[bits[0]])
+      return "site:" + bits.slice(1).join(" · ").toLowerCase()
+    if (bits.length > 1 && (bits[0] === "herdr" || AGENT_LABELS[bits[0].toLowerCase()]))
+      return "herdr:" + bits.slice(1).join(" · ").toLowerCase()
+  }
+  var short = String(value).split(".").pop()
+  return "app:" + String(short || value).toLowerCase()
+}
+
+function matchCovered(matches, match) {
+  var id = matchIdentity(match)
+  if (!id) return false
+  var list = matches || []
+  for (var i = 0; i < list.length; i++) {
+    if (matchIdentity(list[i]) === id) return true
+  }
+  return false
+}
+
+function canonicalGoalMatch(name, appClass) {
+  name = String(name || "")
+  appClass = String(appClass || "")
+  if (!name && !appClass) return ""
+  var bits = name.split(" · ")
+  var left = bits[0]
+  var right = bits.slice(1).join(" · ")
+  if (right && BROWSER_LEFT[left]) return "site:" + right
+  if (right && (left === "herdr" || AGENT_LABELS[left.toLowerCase()])) return "herdr:" + right
+  if (appClass) return "class:" + appClass
+  if (BROWSER_LEFT[name]) return "class:" + name
+  return name ? "class:" + name : ""
+}
+
+function goalMatches(goal) {
+  if (!goal) return []
+  if (goal.matches && goal.matches.length) return goal.matches
+  var match = goal.match
+  if (match && match.length !== undefined && typeof match !== "string") return match
+  return match ? [String(match)] : []
+}
+
+function goalSourceOptions(status) {
+  var out = []
+  var seen = {}
+  function add(match, hint) {
+    match = String(match || "")
+    var id = matchIdentity(match)
+    if (!match || !id || id === "app:unknown" || seen[id]) return
+    seen[id] = true
+    out.push({ match: match, label: matchLabel(match), hint: hint || "" })
+  }
+  status = status || {}
+  var site = status.active_site || ""
+  var herdr = status.active_herdr_workspace || ""
+  var act = status.active_activity || ""
+  var klass = status.active_class || ""
+  if (site) add("site:" + site, "this window")
+  else if (herdr) add("herdr:" + herdr, "this window")
+  else if (klass) add("class:" + klass, "this window")
+  else if (act) add(canonicalGoalMatch(act, klass), "this window")
+  var list = status.activities || []
+  var i
+  for (i = 0; i < list.length; i++) {
+    add(canonicalGoalMatch(rowName(list[i]), list[i].app_class || ""), "")
+  }
+  var sites = status.sites || []
+  for (i = 0; i < sites.length; i++) add("site:" + sites[i].name, "")
+  var herdrs = status.herdr_workspaces || []
+  for (i = 0; i < herdrs.length; i++) add("herdr:" + herdrs[i].name, "")
+  var apps = status.apps || []
+  for (i = 0; i < apps.length; i++) add("class:" + apps[i].app_class, "")
+  add("all", "")
+  return out
+}
+
 function visibleActivities(rows, focused, solo, limit) {
   limit = Math.max(1, Number(limit || 10))
   rows = rows || []
@@ -232,9 +345,149 @@ function visibleActivities(rows, focused, solo, limit) {
 }
 
 function goalList(status) {
-  if (status && status.goals && status.goals.length) return status.goals
-  if (status && status.goal) return [status.goal]
-  return []
+  var src = []
+  if (status && status.goals && status.goals.length) src = status.goals
+  else if (status && status.goal) src = [status.goal]
+  var out = []
+  for (var i = 0; i < src.length; i++) {
+    var g = src[i] || {}
+    out.push({
+      label: g.label || "",
+      match: g.match,
+      matches: goalMatches(g).slice(),
+      target: Number(g.target || 0),
+      net_words: Number(g.net_words || 0),
+      percent: Number(g.percent || 0)
+    })
+  }
+  return out
+}
+
+function cloneDraftGoals(goals) {
+  var src = goals || []
+  var out = []
+  for (var i = 0; i < src.length; i++) {
+    out.push({
+      label: src[i].label || "",
+      target: Number(src[i].target || 0),
+      matches: goalMatches(src[i]).slice(),
+      net_words: src[i].net_words,
+      percent: src[i].percent
+    })
+  }
+  return out
+}
+
+function goalsPayload(draftGoals) {
+  var payload = []
+  var list = draftGoals || []
+  for (var i = 0; i < list.length; i++) {
+    var m = list[i].matches || []
+    if (!m.length) continue
+    payload.push({
+      match: m.length === 1 ? m[0] : m,
+      words: Number(list[i].target || 0),
+      label: list[i].label || matchLabel(m[0])
+    })
+  }
+  return payload
+}
+
+function goalCanAccept(goal) {
+  if (!goal) return false
+  return (goal.matches || []).length > 0
+}
+
+function clampIndex(i, n) {
+  n = Number(n || 0)
+  if (n <= 0) return -1
+  i = Number(i)
+  if (isNaN(i)) return 0
+  if (i < 0) return 0
+  if (i >= n) return n - 1
+  return i
+}
+
+function emptyEditorState() {
+  return { open: false, selected: -1, editing: -1, fieldFocused: false }
+}
+
+function openEditorState(count) {
+  count = Number(count || 0)
+  return {
+    open: true,
+    selected: count > 0 ? 0 : -1,
+    editing: -1,
+    fieldFocused: false
+  }
+}
+
+function closeEditorState() {
+  return { open: false, selected: -1, editing: -1, fieldFocused: false }
+}
+
+function applyGoalsCommand(state, command, count, index) {
+  state = state || emptyEditorState()
+  count = Number(count || 0)
+  command = String(command || "")
+  var selected = clampIndex(state.selected, count)
+
+  if (command === "done" || command === "close") {
+    if (!state.open) return { state: closeEditorState(), action: "none" }
+    return { state: closeEditorState(), action: "close" }
+  }
+  if (command === "open") {
+    if (state.open) return { state: state, action: "none" }
+    return { state: openEditorState(count), action: "open" }
+  }
+  if (command === "g") {
+    if (state.fieldFocused) return { state: state, action: "none" }
+    if (state.open) return { state: closeEditorState(), action: "close" }
+    return { state: openEditorState(count), action: "open" }
+  }
+  if (command === "escape") {
+    if (!state.open) return { state: state, action: "none" }
+    return { state: closeEditorState(), action: "close" }
+  }
+  if (!state.open) return { state: state, action: "none" }
+  if (command === "accept" || command === "enter" || command === "return") {
+    if (state.editing < 0) return { state: state, action: "none" }
+    var accepted = clampIndex(state.editing, count)
+    return {
+      state: { open: true, selected: accepted, editing: -1, fieldFocused: false },
+      action: "accept"
+    }
+  }
+  if (command === "click") {
+    var clicked = clampIndex(index, count)
+    if (clicked < 0) return { state: state, action: "none" }
+    return {
+      state: { open: true, selected: clicked, editing: clicked, fieldFocused: false },
+      action: "edit"
+    }
+  }
+  if (command === "edit") {
+    if (selected < 0) return { state: state, action: "none" }
+    return {
+      state: { open: true, selected: selected, editing: selected, fieldFocused: false },
+      action: "edit"
+    }
+  }
+  if (command === "up") {
+    var up = clampIndex(selected < 0 ? 0 : selected - 1, count)
+    return {
+      state: { open: true, selected: up, editing: -1, fieldFocused: false },
+      action: "select"
+    }
+  }
+  if (command === "down") {
+    var down = clampIndex(selected < 0 ? 0 : selected + 1, count)
+    return {
+      state: { open: true, selected: down, editing: -1, fieldFocused: false },
+      action: "select"
+    }
+  }
+  return { state: state, action: "none" }
 }
 
 function emptyStatus() {
@@ -242,6 +495,7 @@ function emptyStatus() {
     state: "starting",
     message: "Starting…",
     paused: false,
+    today_words: 0,
     live_wpm: 0,
     last_burst_wpm: 0,
     session_wpm: 0,
@@ -282,32 +536,42 @@ function mergeStatus(raw) {
   return base
 }
 
+function primaryGoal(status) {
+  var list = goalList(status)
+  return list.length ? list[0] : null
+}
+
 function barLabel(status, vertical) {
-  if (!status) return "WPM"
-  if (status.state === "need_input_group") return vertical ? "WPM" : "WPM setup"
-  if (status.state === "error") return "WPM"
-  var goal = status.goal || {}
-  var net = Number(goal.net_words || 0)
-  var target = Number(goal.target || 0)
+  if (!status) return "Words"
+  if (status.state === "need_input_group") return vertical ? "Words" : ICON_WORDS + " setup"
+  if (status.state === "error") return "Words"
+  var today = Number(status.today_words)
+  if (!isFinite(today)) {
+    today = 0
+    var rows = status.activities || []
+    for (var i = 0; i < rows.length; i++) today += Number(rows[i].net_words || 0)
+  }
   var live = Number(status.live_wpm || 0)
-  if (vertical) return live > 0 ? String(Math.round(live)) : String(net)
-  if (live > 0) return Math.round(live) + " · " + net + "/" + target
-  return net + "/" + target
+  if (vertical) return live > 0 ? String(Math.round(live)) : String(today)
+  var main = live > 0 ? Math.round(live) + " · " + today : String(today)
+  var goal = primaryGoal(status)
+  var goalBit = ""
+  if (goal && Number(goal.target || 0) > 0)
+    goalBit = "  " + ICON_GOAL + " " + Number(goal.net_words || 0) + "/" + Number(goal.target)
+  return ICON_WORDS + " " + main + goalBit
 }
 
 function tooltip(status) {
-  if (!status) return "WPM"
+  if (!status) return "Words"
   if (status.state === "need_input_group")
     return "Cannot read the keyboard. Add your user to the input group, then log out."
   if (status.message && status.state !== "running") return String(status.message)
-  var goal = status.goal || {}
   var parts = []
-  parts.push("Goal " + (goal.label || goal.match || goal.app_class || "obsidian") + " " + Number(goal.net_words || 0) + "/" + Number(goal.target || 0))
+  parts.push(Number(status.today_words || 0) + " today")
+  var goal = status.goal || {}
+  if (Number(goal.target || 0) > 0)
+    parts.push((goal.label || "goal") + " " + Number(goal.net_words || 0) + "/" + Number(goal.target || 0))
   parts.push("Burst " + Math.round(Number(status.last_burst_wpm || 0)) + " WPM")
-  parts.push("Session " + Math.round(Number(status.session_wpm || 0)) + " WPM")
-  if (status.active_activity) parts.push(status.active_activity)
-  else if (status.active_class) parts.push(status.active_class)
-  if (status.active_hypr_workspace) parts.push("ws " + status.active_hypr_workspace)
   return parts.join(" · ")
 }
 

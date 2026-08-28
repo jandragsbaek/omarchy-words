@@ -15,7 +15,7 @@ Item {
   property bool expectedStop: false
   property int restartAttempt: 0
 
-  readonly property string moduleName: "jandragsbaek.wpm"
+  readonly property string moduleName: "jandragsbaek.words"
   readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"
   readonly property string statusPath: runtimeDir + "/omawpm/status.json"
 
@@ -70,6 +70,11 @@ Item {
     reportProc.running = true
   }
 
+  function setGoals(json) {
+    goalsWriter.command = ["python3", cliPath, "config", "goals", String(json || "[]")]
+    goalsWriter.running = true
+  }
+
   onSettingsChanged: Qt.callLater(syncConfig)
 
   QtObject {
@@ -91,6 +96,11 @@ Item {
       var keys = ["goalWords", "goalMatch", "goalAppClass", "goals", "dailyNotePath", "autoExport"]
       var values = [goalWords, goalMatch, goalAppClass, goals, dailyNotePath, autoExport]
       if (step >= keys.length) return
+      if (keys[step] === "goals" && (!goals || goals === "" || goals === "[]")) {
+        step += 1
+        next()
+        return
+      }
       configWriter.command = ["python3", root.cliPath, "config", keys[step], values[step]]
       configWriter.running = true
     }
@@ -122,6 +132,11 @@ Item {
 
   Process {
     id: reportProc
+    running: false
+  }
+
+  Process {
+    id: goalsWriter
     running: false
   }
 

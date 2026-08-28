@@ -1,5 +1,5 @@
-"""Omalink/WPM: actual-input typing stats for Omarchy."""
+"""Words for Omarchy: actual-input word counts and live WPM."""
 
-__version__ = "0.1.0"
-PLUGIN_ID = "jandragsbaek.wpm"
-LEGACY_PLUGIN_IDS = ("jan.wpm",)
+__version__ = "1.0.0"
+PLUGIN_ID = "jandragsbaek.words"
+LEGACY_PLUGIN_IDS = ("jan.wpm", "jandragsbaek.wpm")

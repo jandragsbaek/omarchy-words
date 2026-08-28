@@ -7,7 +7,7 @@ import "Model.js" as Model
 
 BarWidget {
   id: root
-  moduleName: "jandragsbaek.wpm"
+  moduleName: "jandragsbaek.words"
 
   readonly property var service: bar && bar.shell && bar.shell.serviceFor ? bar.shell.serviceFor(moduleName) : null
   readonly property var status: service && service.snapshot ? service.snapshot : Model.emptyStatus()
@@ -74,7 +74,7 @@ BarWidget {
   implicitHeight: button.implicitHeight
 
   IpcHandler {
-    target: "jandragsbaek.wpm"
+    target: "jandragsbaek.words"
     function open(): void { root.open() }
     function close(): void { root.close() }
     function show(): void { root.open() }

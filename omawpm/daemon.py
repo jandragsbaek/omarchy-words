@@ -279,6 +279,7 @@ class Daemon:
             "message": "Paused" if self.paused and self.state == "running" else self.message,
             "paused": paused,
             "day": day,
+            "today_words": sum(int(r.get("net_words") or 0) for r in activities),
             "live_wpm": round(sess.live_wpm, 1),
             "last_burst_wpm": round(sess.last_burst_wpm, 1),
             "session_wpm": round(sess.session_wpm, 1),

@@ -38,6 +38,37 @@ def _pick(rows: list[dict[str, Any]], key: str, value: str) -> dict[str, Any] | 
     return None
 
 
+def _class_alike(klass: str, needle: str) -> bool:
+    """`obsidian` matches `md.obsidian.Obsidian` and `Obsidian`."""
+    k = str(klass or "").lower()
+    n = str(needle or "").strip().lower()
+    if not k or not n:
+        return False
+    if k == n:
+        return True
+    parts = [p for p in k.split(".") if p]
+    return n == parts[-1] or n in parts
+
+
+def _pick_app(apps: list[dict[str, Any]], value: str) -> dict[str, Any] | None:
+    found = _pick(apps, "app_class", value)
+    if found:
+        return found
+    for row in apps:
+        if _class_alike(str(row.get("app_class") or ""), value):
+            return row
+    return None
+
+
+def _match_identity(kind: str, value: str) -> tuple[str, str]:
+    """Collapse class/activity/any of the same window into one bucket so a
+    picker that adds both `class:X` and `activity:X` does not double-count."""
+    n = str(value or "").strip().lower()
+    if kind in {"class", "activity", "any"}:
+        return ("window", n.split(".")[-1] if "." in n else n)
+    return (kind, n)
+
+
 def _zeros() -> dict[str, int]:
     return {
         "inserted_words": 0,
@@ -80,9 +111,13 @@ def counts_for_match(
     if kind == "all":
         return _from_row(total)
     if kind == "class":
-        return _from_row(_pick(apps, "app_class", value))
+        return _from_row(_pick_app(apps, value))
     if kind == "activity":
-        return _from_row(_pick(activities, "name", value) or _pick(activities, "app_class", value))
+        return _from_row(
+            _pick(activities, "name", value)
+            or _pick(activities, "app_class", value)
+            or _pick_app(apps, value)
+        )
     if kind == "herdr":
         return _from_row(_pick(herdr, "name", value))
     if kind == "hypr":
@@ -90,7 +125,7 @@ def counts_for_match(
     if kind == "site":
         return _from_row(_pick(sites, "name", value))
     row = (
-        _pick(apps, "app_class", value)
+        _pick_app(apps, value)
         or _pick(herdr, "name", value)
         or _pick(activities, "name", value)
         or _pick(activities, "app_class", value)
@@ -98,6 +133,43 @@ def counts_for_match(
         or _pick(sites, "name", canonical_site(value))
     )
     return _from_row(row)
+
+
+def match_list(match: Any) -> list[str]:
+    if isinstance(match, list):
+        return [str(item).strip() for item in match if str(item).strip()]
+    text = str(match or "").strip()
+    return [text] if text else []
+
+
+def counts_for_matches(
+    matches: Any,
+    apps: list[dict[str, Any]],
+    activities: list[dict[str, Any]],
+    herdr: list[dict[str, Any]],
+    hypr: list[dict[str, Any]],
+    total: dict[str, Any] | None = None,
+    sites: list[dict[str, Any]] | None = None,
+) -> dict[str, int]:
+    items = match_list(matches)
+    if not items:
+        return _zeros()
+    if len(items) == 1:
+        return counts_for_match(items[0], apps, activities, herdr, hypr, total, sites)
+    acc = _zeros()
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        kind, value = normalize_match(item)
+        identity = _match_identity(kind, value)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        counts = counts_for_match(item, apps, activities, herdr, hypr, total, sites)
+        for key in ("inserted_words", "deleted_words", "inserted_chars", "deleted_chars"):
+            acc[key] += int(counts.get(key) or 0)
+    acc["net_words"] = max(0, acc["inserted_words"] - acc["deleted_words"])
+    acc["net_chars"] = max(0, acc["inserted_chars"] - acc["deleted_chars"])
+    return acc
 
 
 def parse_goals(cfg: dict[str, Any]) -> list[dict[str, Any]]:
@@ -112,19 +184,21 @@ def parse_goals(cfg: dict[str, Any]) -> list[dict[str, Any]]:
         for item in raw:
             if not isinstance(item, dict):
                 continue
-            match = str(item.get("match") or "").strip()
-            if not match:
+            matches = match_list(item.get("match") or item.get("matches"))
+            if not matches:
                 continue
             words = item.get("words", item.get("target", 0))
             try:
                 target = max(0, int(words))
             except (TypeError, ValueError):
                 target = 0
+            primary = matches[0]
             goals.append(
                 {
-                    "match": match,
+                    "match": primary if len(matches) == 1 else matches,
+                    "matches": matches,
                     "target": target,
-                    "label": str(item.get("label") or match),
+                    "label": str(item.get("label") or primary),
                 }
             )
     if not goals:
@@ -133,7 +207,7 @@ def parse_goals(cfg: dict[str, Any]) -> list[dict[str, Any]]:
             target = max(0, int(cfg.get("goalWords") or 1000))
         except (TypeError, ValueError):
             target = 1000
-        goals.append({"match": match, "target": target, "label": match})
+        goals.append({"match": match, "matches": [match], "target": target, "label": match})
     return goals
 
 
@@ -148,12 +222,16 @@ def score_goals(
 ) -> list[dict[str, Any]]:
     scored = []
     for goal in parse_goals(cfg):
-        counts = counts_for_match(goal["match"], apps, activities, herdr, hypr, total, sites)
+        counts = counts_for_matches(
+            goal.get("matches") or goal["match"], apps, activities, herdr, hypr, total, sites
+        )
         target = int(goal["target"] or 0)
         net = int(counts["net_words"])
+        matches = match_list(goal.get("matches") or goal["match"])
         scored.append(
             {
-                "match": goal["match"],
+                "match": matches[0] if len(matches) == 1 else matches,
+                "matches": matches,
                 "label": goal["label"],
                 "target": target,
                 "net_words": net,

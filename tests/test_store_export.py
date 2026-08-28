@@ -174,7 +174,7 @@ class ExportTests(unittest.TestCase):
 
     def test_migrates_legacy_sqlite(self):
         from omawpm.store import PLUGIN_ID
-        self.assertEqual(PLUGIN_ID, "jandragsbaek.wpm")
+        self.assertEqual(PLUGIN_ID, "jandragsbaek.words")
         dest = Path(self.tmp.name) / "plugins" / PLUGIN_ID / "wpm.sqlite"
         migrate_legacy_db(dest)
         self.assertFalse(dest.exists())
