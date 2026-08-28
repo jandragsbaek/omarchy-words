@@ -7,7 +7,7 @@ note, and a GitHub-style year graph in the panel.
 
 It never stores the text you type — only counts.
 
-![Words panel](screenshot.png)
+![Words panel](preview.png)
 
 ## Install
 
@@ -15,7 +15,25 @@ It never stores the text you type — only counts.
 omarchy plugin add https://github.com/jandragsbaek/omarchy-words.git --enable --yes
 ```
 
-The widget lands on the right of the bar. Move it with `omarchy bar move jandragsbaek.words`.
+The widget lands on the right of the bar. Move it with:
+
+```sh
+omarchy bar move jandragsbaek.words --section center
+```
+
+## Remove
+
+```sh
+omarchy plugin remove jandragsbaek.words
+```
+
+That disables the plugin and deletes `~/.config/omarchy/plugins/jandragsbaek.words`. It does not delete the SQLite history at `~/.local/state/omarchy/plugins/jandragsbaek.words/`.
+
+## Dependencies
+
+- Omarchy (Quattro shell / Quickshell)
+- Python 3, stdlib only — no pip packages
+- The `input` group, so the daemon can read `/dev/input` (see below)
 
 ## Keyboard access
 
