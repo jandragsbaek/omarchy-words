@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "id": "jan.wpm",
+  "name": "WPM",
+  "version": "0.1.0",
+  "author": "jan",
+  "license": "MIT",
+  "description": "Live WPM from actual keystrokes, per window, with git-style diffs and a daily Obsidian writing goal.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "WPM",
+    "description": "Typing speed, per-app git diffs, and a daily word goal",
+    "category": "Productivity",
+    "defaultSection": "right",
+    "allowMultiple": false,
+    "defaults": {
+      "goalWords": 1000,
+      "goalAppClass": "obsidian",
+      "dailyNotePath": "",
+      "autoExport": false
+    },
+    "schema": [
+      {
+        "key": "goalWords",
+        "type": "integer",
+        "label": "Daily word goal",
+        "description": "Space-separated net words to hit in the goal app each day.",
+        "min": 0,
+        "max": 100000,
+        "step": 50,
+        "defaultValue": 1000
+      },
+      {
+        "key": "goalAppClass",
+        "type": "string",
+        "label": "Goal app class",
+        "description": "Hyprland window class to count toward the goal, usually obsidian.",
+        "defaultValue": "obsidian"
+      },
+      {
+        "key": "dailyNotePath",
+        "type": "string",
+        "label": "Daily note path",
+        "description": "Obsidian daily-note path. Tokens: {date} {yyyy} {MM} {dd}. Empty disables auto-write.",
+        "defaultValue": ""
+      },
+      {
+        "key": "autoExport",
+        "type": "boolean",
+        "label": "Update daily note",
+        "description": "Rewrite the marked section in today's daily note as you type.",
+        "defaultValue": false
+      }
+    ]
+  }
+}
