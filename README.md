@@ -7,6 +7,8 @@ note, and a GitHub-style year graph in the panel.
 
 It never stores the text you type — only counts.
 
+![Words panel](screenshot.png)
+
 ## Install
 
 ```sh
