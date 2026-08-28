@@ -7,7 +7,7 @@ import "Model.js" as Model
 
 BarWidget {
   id: root
-  moduleName: "jan.wpm"
+  moduleName: "jandragsbaek.wpm"
 
   readonly property var service: bar && bar.shell && bar.shell.serviceFor ? bar.shell.serviceFor(moduleName) : null
   readonly property var status: service && service.snapshot ? service.snapshot : Model.emptyStatus()
@@ -74,13 +74,15 @@ BarWidget {
   implicitHeight: button.implicitHeight
 
   IpcHandler {
-    target: "jan.wpm"
+    target: "jandragsbaek.wpm"
     function open(): void { root.open() }
     function close(): void { root.close() }
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.togglePanel() }
     function exportNote(): void { if (root.service) root.service.exportNote() }
+    function explore(): void { if (root.service) root.service.explore() }
+    function report(): void { if (root.service) root.service.report() }
     function pause(): void { if (root.service) root.service.pause(true) }
     function resume(): void { if (root.service) root.service.pause(false) }
   }
@@ -104,7 +106,8 @@ BarWidget {
     labelVisible: !root.vertical
     hasVisualContent: true
     tooltipText: Model.tooltip(root.status)
-    active: Number(root.status.live_wpm || 0) > 0
+    active: false
+    useActiveColor: false
     horizontalMargin: 8.75
     verticalPadding: 8.75
 

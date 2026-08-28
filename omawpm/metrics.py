@@ -158,11 +158,20 @@ def classify_key(code: int) -> str:
     return KIND_IGNORE
 
 
+# A 300ms sample of fast typing looks like 400–800 WPM because the
+# denominator is tiny. Wait until we have a real second, then cap.
+MIN_WPM_MS = 1000
+MIN_WPM_CHARS = 5
+MAX_WPM = 220.0
+
+
 def wpm_from_net_chars(net_chars: int, elapsed_ms: int) -> float:
-    if elapsed_ms <= 0 or net_chars <= 0:
+    if net_chars <= 0 or elapsed_ms <= 0:
+        return 0.0
+    if elapsed_ms < MIN_WPM_MS or net_chars < MIN_WPM_CHARS:
         return 0.0
     minutes = elapsed_ms / 60000.0
-    return (net_chars / 5.0) / minutes
+    return min(MAX_WPM, (net_chars / 5.0) / minutes)
 
 
 def count_letter_runs(classes: str) -> int:
@@ -316,14 +325,17 @@ class Session:
             self.burst.inserted_chars += 1
             self.session_inserted += 1
         self.burst.last_ms = now_ms
-        elapsed = self.burst.elapsed_ms(now_ms)
-        self.live_wpm = self.burst.wpm(now_ms) if elapsed >= 300 else self.live_wpm
+        sample = self.burst.wpm(now_ms)
+        if sample > 0:
+            self.live_wpm = sample
 
     def tick(self, now_ms: int) -> None:
         if self.burst and now_ms - self.burst.last_ms > self.idle_ms:
             self._close_burst(now_ms)
         elif self.burst:
-            self.live_wpm = self.burst.wpm(now_ms)
+            sample = self.burst.wpm(now_ms)
+            if sample > 0:
+                self.live_wpm = sample
 
     def _close_burst(self, now_ms: int) -> None:
         burst = self.burst
@@ -332,7 +344,9 @@ class Session:
             return
         elapsed = max(burst.last_ms - burst.started_ms, 1)
         self.session_typing_ms += elapsed
-        self.last_burst_wpm = burst.wpm(burst.last_ms)
+        sample = burst.wpm(burst.last_ms)
+        if sample > 0:
+            self.last_burst_wpm = sample
         total = burst.inserted_chars + burst.deleted_chars
         if total > 0:
             self.last_burst_accuracy = 100.0 * burst.inserted_chars / total
@@ -346,38 +360,14 @@ class Session:
 
 @dataclass
 class KeyTracker:
-    """Held-modifier state plus per-window drafts and the live WPM session."""
+    """Per-window class-only drafts and the live WPM session. No scancodes."""
 
-    mods_down: set[int] = field(default_factory=set)
-    shift_down: set[int] = field(default_factory=set)
     drafts: dict[str, WindowDraft] = field(default_factory=dict)
     session: Session = field(default_factory=Session)
 
-    def shortcut_held(self) -> bool:
-        return bool(self.mods_down)
-
-    def handle_evdev(self, ev_type: int, code: int, value: int, now_ms: int, window_key: str) -> Optional[str]:
-        """Feed one evdev KEY event. Returns the applied kind, or None if ignored."""
-        if ev_type != EV_KEY:
-            return None
-        kind = classify_key(code)
-        if kind == KIND_MOD:
-            if code in SHIFT:
-                if value:
-                    self.shift_down.add(code)
-                else:
-                    self.shift_down.discard(code)
-            else:
-                if value:
-                    self.mods_down.add(code)
-                else:
-                    self.mods_down.discard(code)
-            return None
-        if value == 0:
-            return None
-        if self.shortcut_held():
-            return None
-        if kind == KIND_IGNORE:
+    def handle_kind(self, kind: str, now_ms: int, window_key: str) -> Optional[str]:
+        """Apply an already-blinded key kind. `kind` is L/S/P/D only."""
+        if kind not in (KIND_LETTER, KIND_SPACE, KIND_PUNCT, KIND_DELETE):
             return None
         draft = self.drafts.setdefault(window_key, WindowDraft())
         draft.apply(kind)

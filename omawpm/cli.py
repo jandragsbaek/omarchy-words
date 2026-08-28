@@ -71,6 +71,12 @@ def cmd_config(args: argparse.Namespace) -> int:
         cfg[key] = raw.lower() in {"1", "true", "yes", "on"}
     elif isinstance(current, int):
         cfg[key] = int(raw)
+    elif isinstance(current, list):
+        try:
+            parsed = json.loads(raw) if raw.strip() else []
+        except json.JSONDecodeError:
+            parsed = []
+        cfg[key] = parsed if isinstance(parsed, list) else []
     else:
         cfg[key] = raw
     configmod.save_config(cfg)
@@ -82,6 +88,40 @@ def cmd_pause(args: argparse.Namespace) -> int:
     cfg["paused"] = args.paused
     configmod.save_config(cfg)
     print("paused" if args.paused else "resumed")
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    from .explore import open_explore, render_report, write_report
+
+    if args.stdout:
+        store = _store()
+        try:
+            sys.stdout.write(render_report(store, args.day or day_key()))
+        finally:
+            store.close()
+        return 0
+    path = write_report(day=args.day)
+    if not args.no_open:
+        open_explore(path)
+    print(path)
+    return 0
+
+
+def cmd_explore(args: argparse.Namespace) -> int:
+    from .explore import open_explore, render_html, write_explore
+
+    if args.stdout:
+        store = _store()
+        try:
+            sys.stdout.write(render_html(store, args.day or day_key(), statusmod.read_status() or None))
+        finally:
+            store.close()
+        return 0
+    path = write_explore(day=args.day)
+    if not args.no_open:
+        open_explore(path)
+    print(path)
     return 0
 
 
@@ -114,6 +154,18 @@ def build_parser() -> argparse.ArgumentParser:
     pause.set_defaults(func=cmd_pause, paused=True)
     resume = sub.add_parser("resume", help="Resume counting")
     resume.set_defaults(func=cmd_pause, paused=False)
+
+    r = sub.add_parser("report", help="Open week/month/year/all report in a browser tab")
+    r.add_argument("--day", help="YYYY-MM-DD (default: today)")
+    r.add_argument("--stdout", action="store_true", help="Print HTML instead of opening")
+    r.add_argument("--no-open", action="store_true", help="Write the file but do not open it")
+    r.set_defaults(func=cmd_report)
+
+    x = sub.add_parser("explore", help="Open today's full stats in a browser tab")
+    x.add_argument("--day", help="YYYY-MM-DD (default: today)")
+    x.add_argument("--stdout", action="store_true", help="Print HTML instead of opening")
+    x.add_argument("--no-open", action="store_true", help="Write the file but do not open it")
+    x.set_defaults(func=cmd_explore)
     return p
 
 

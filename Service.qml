@@ -15,7 +15,7 @@ Item {
   property bool expectedStop: false
   property int restartAttempt: 0
 
-  readonly property string moduleName: "jan.wpm"
+  readonly property string moduleName: "jandragsbaek.wpm"
   readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"
   readonly property string statusPath: runtimeDir + "/omawpm/status.json"
 
@@ -33,13 +33,18 @@ Item {
 
   function syncConfig() {
     var goalWords = settings && settings.goalWords !== undefined ? settings.goalWords : 1000
-    var goalApp = settings && settings.goalAppClass ? settings.goalAppClass : "obsidian"
+    var goalMatch = settings && settings.goalMatch ? settings.goalMatch : (settings && settings.goalAppClass ? settings.goalAppClass : "obsidian")
+    var goalApp = settings && settings.goalAppClass ? settings.goalAppClass : goalMatch
+    var goals = settings && settings.goals !== undefined && settings.goals !== null ? settings.goals : ""
+    if (typeof goals !== "string") goals = JSON.stringify(goals)
     var note = settings && settings.dailyNotePath ? settings.dailyNotePath : ""
     var autoExport = settings && settings.autoExport === true
     configWriter.command = ["python3", cliPath, "config", "goalWords", String(goalWords)]
     configWriter.running = false
     configBundle.goalWords = String(goalWords)
+    configBundle.goalMatch = String(goalMatch)
     configBundle.goalAppClass = String(goalApp)
+    configBundle.goals = String(goals)
     configBundle.dailyNotePath = String(note)
     configBundle.autoExport = autoExport ? "true" : "false"
     configBundle.start()
@@ -55,12 +60,24 @@ Item {
     exportProc.running = true
   }
 
+  function explore() {
+    exploreProc.command = ["python3", cliPath, "explore"]
+    exploreProc.running = true
+  }
+
+  function report() {
+    reportProc.command = ["python3", cliPath, "report"]
+    reportProc.running = true
+  }
+
   onSettingsChanged: Qt.callLater(syncConfig)
 
   QtObject {
     id: configBundle
     property string goalWords: "1000"
+    property string goalMatch: "obsidian"
     property string goalAppClass: "obsidian"
+    property string goals: ""
     property string dailyNotePath: ""
     property string autoExport: "false"
     property int step: 0
@@ -71,8 +88,8 @@ Item {
     }
 
     function next() {
-      var keys = ["goalWords", "goalAppClass", "dailyNotePath", "autoExport"]
-      var values = [goalWords, goalAppClass, dailyNotePath, autoExport]
+      var keys = ["goalWords", "goalMatch", "goalAppClass", "goals", "dailyNotePath", "autoExport"]
+      var values = [goalWords, goalMatch, goalAppClass, goals, dailyNotePath, autoExport]
       if (step >= keys.length) return
       configWriter.command = ["python3", root.cliPath, "config", keys[step], values[step]]
       configWriter.running = true
@@ -84,7 +101,7 @@ Item {
     running: false
     onExited: {
       configBundle.step += 1
-      if (configBundle.step < 4) configBundle.next()
+      if (configBundle.step < 6) configBundle.next()
     }
   }
 
@@ -95,6 +112,16 @@ Item {
 
   Process {
     id: exportProc
+    running: false
+  }
+
+  Process {
+    id: exploreProc
+    running: false
+  }
+
+  Process {
+    id: reportProc
     running: false
   }
 

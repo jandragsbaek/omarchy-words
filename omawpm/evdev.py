@@ -8,7 +8,10 @@ import stat
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import TYPE_CHECKING, Iterable, Iterator
+
+if TYPE_CHECKING:
+    from .blind import InputFilter
 
 # Native 64-bit Linux input_event: timeval(2×long) + type + code + value.
 EVENT = struct.Struct("llHHi")
@@ -16,15 +19,11 @@ EV_KEY = 1
 
 
 @dataclass
-class KeyEvent:
-    seconds: int
-    microseconds: int
-    code: int
-    value: int
+class BlindStroke:
+    """A countable keystroke with no scancode and no character."""
 
-    @property
-    def now_ms(self) -> int:
-        return self.seconds * 1000 + self.microseconds // 1000
+    kind: str
+    now_ms: int
 
 
 def parse_handlers() -> list[Path]:
@@ -92,7 +91,8 @@ def open_keyboards() -> tuple[list[int], list[str]]:
     return fds, errors
 
 
-def iter_events(fd: int) -> Iterator[KeyEvent]:
+def iter_blind(fd: int, filt: "InputFilter") -> Iterator[BlindStroke]:
+    """Read evdev, classify, forget the scancode, yield only kinds."""
     while True:
         try:
             buf = os.read(fd, EVENT.size)
@@ -105,9 +105,13 @@ def iter_events(fd: int) -> Iterator[KeyEvent]:
         if len(buf) != EVENT.size:
             return
         sec, usec, ev_type, code, value = EVENT.unpack(buf)
-        if ev_type != EV_KEY:
+        kind = filt.consider(ev_type, code, value)
+        code = 0
+        value = 0
+        ev_type = 0
+        if not kind:
             continue
-        yield KeyEvent(seconds=sec, microseconds=usec, code=code, value=value)
+        yield BlindStroke(kind=kind, now_ms=sec * 1000 + usec // 1000)
 
 
 def close_fds(fds: Iterable[int]) -> None:

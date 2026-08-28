@@ -6,7 +6,9 @@ from typing import Any
 
 DEFAULTS: dict[str, Any] = {
     "goalWords": 1000,
+    "goalMatch": "obsidian",
     "goalAppClass": "obsidian",
+    "goals": [],
     "dailyNotePath": "",
     "autoExport": False,
     "burstIdleMs": 1500,
@@ -28,9 +30,21 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
                 cfg.update({k: data[k] for k in DEFAULTS if k in data})
         except (OSError, json.JSONDecodeError):
             pass
-    cfg["goalWords"] = max(0, int(cfg["goalWords"]))
-    cfg["burstIdleMs"] = max(400, int(cfg["burstIdleMs"]))
-    cfg["goalAppClass"] = str(cfg["goalAppClass"] or "obsidian")
+    try:
+        cfg["goalWords"] = max(0, int(cfg["goalWords"]))
+    except (TypeError, ValueError):
+        cfg["goalWords"] = 1000
+    cfg["burstIdleMs"] = max(400, int(cfg.get("burstIdleMs") or 1500))
+    match = str(cfg.get("goalMatch") or cfg.get("goalAppClass") or "obsidian")
+    cfg["goalMatch"] = match
+    cfg["goalAppClass"] = str(cfg.get("goalAppClass") or match)
+    goals = cfg.get("goals")
+    if isinstance(goals, str) and goals.strip():
+        try:
+            goals = json.loads(goals)
+        except json.JSONDecodeError:
+            goals = []
+    cfg["goals"] = goals if isinstance(goals, list) else []
     cfg["dailyNotePath"] = str(cfg["dailyNotePath"] or "")
     cfg["autoExport"] = bool(cfg["autoExport"])
     cfg["paused"] = bool(cfg["paused"])

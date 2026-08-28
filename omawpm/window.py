@@ -13,6 +13,13 @@ class ActiveWindow:
     app_class: str
     title: str
     address: str
+    pid: int = 0
+    workspace_id: str = ""
+    workspace_name: str = ""
+
+    @property
+    def hypr_workspace(self) -> str:
+        return self.workspace_name or self.workspace_id or ""
 
     @property
     def key(self) -> str:
@@ -49,7 +56,21 @@ def read_active_window() -> ActiveWindow:
     app_class = str(data.get("class") or data.get("initialClass") or "unknown")
     title = str(data.get("title") or "")
     address = str(data.get("address") or "")
-    return ActiveWindow(app_class=app_class, title=title, address=address)
+    try:
+        pid = int(data.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    workspace = data.get("workspace") if isinstance(data.get("workspace"), dict) else {}
+    workspace_id = str(workspace.get("id") or "")
+    workspace_name = str(workspace.get("name") or "")
+    return ActiveWindow(
+        app_class=app_class,
+        title=title,
+        address=address,
+        pid=pid,
+        workspace_id=workspace_id,
+        workspace_name=workspace_name,
+    )
 
 
 def session_looks_locked() -> bool:

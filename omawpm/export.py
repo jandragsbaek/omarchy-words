@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .goals import score_goals
+from .labels import display_name
 from .store import Store
 
 MARKER_START = "<!-- omawpm:start -->"
@@ -29,18 +31,30 @@ def render_markdown(
     live: dict[str, Any] | None = None,
 ) -> str:
     apps = store.apps_for_day(day)
-    windows = store.windows_for_day(day)
     total = store.total_for_day(day)
-    goal = store.goal_progress(day, goal_app)
+    activities = store.slices_for_day(day, "activity")
+    herdr = store.slices_for_day(day, "herdr")
+    hypr = store.slices_for_day(day, "hypr")
+    sites = store.slices_for_day(day, "site")
+    scored = score_goals(
+        {"goalMatch": goal_app, "goalAppClass": goal_app, "goalWords": goal_words},
+        apps,
+        activities,
+        herdr,
+        hypr,
+        total,
+        sites,
+    )
+    goal = scored[0] if scored else {"label": goal_app, "net_words": 0, "target": goal_words, "percent": 0, "match": goal_app}
     net = goal["net_words"]
-    pct = 0 if goal_words <= 0 else min(100, int(round(100 * net / goal_words)))
+    pct = int(goal.get("percent") or 0)
     lines = [
         MARKER_START,
         f"## Writing — {day}",
         "",
-        f"Goal ({goal_app}): **{net} / {goal_words}** words ({pct}%)",
-        f"Today overall: {git_diff(total['inserted_words'], total['deleted_words'])} words, "
-        f"{git_diff(total['inserted_chars'], total['deleted_chars'])} chars",
+        f"Goal ({display_name(str(goal.get('label') or goal_app))}): **{net} / {goal.get('target') or goal_words}** words ({pct}%)",
+        f"Today overall: {git_diff(total['inserted_chars'], total['deleted_chars'])} chars · "
+        f"{total['net_words']} words",
     ]
     if live:
         lines.append(
@@ -49,24 +63,47 @@ def render_markdown(
         )
     lines += [
         "",
-        "| App | +words | −words | net | +chars | −chars |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| App | + | − | words |",
+        "|---|---:|---:|---:|",
     ]
     if not apps:
-        lines.append("| — | 0 | 0 | 0 | 0 | 0 |")
+        lines.append("| — | 0 | 0 | 0 |")
     for app in apps:
         lines.append(
-            "| {app_class} | {inserted_words} | {deleted_words} | {net_words} | {inserted_chars} | {deleted_chars} |".format(
+            "| {label} | {inserted_chars} | {deleted_chars} | {net_words} |".format(
+                label=display_name(app.get("app_class") or ""),
                 **app
             )
         )
-    titled = [w for w in windows if w.app_title]
-    if titled:
-        lines += ["", "### Windows", "", "| App | Window | +words | −words | net |", "|---|---|---:|---:|---:|"]
-        for w in titled:
-            title = w.app_title.replace("|", "\\|")
+    if scored and len(scored) > 1:
+        lines += ["", "### Goals", "", "| Goal | match | progress |", "|---|---|---|"]
+        for row in scored:
             lines.append(
-                f"| {w.app_class} | {title} | {w.inserted_words} | {w.deleted_words} | {w.net_words} |"
+                f"| {row['label']} | {row['match']} | {row['net_words']} / {row['target']} ({row['percent']}%) |"
+            )
+    if activities:
+        lines += ["", "### Activity", "", "| Activity | + | − | words |", "|---|---:|---:|---:|"]
+        for row in activities:
+            lines.append(
+                f"| {display_name(row['name'])} | {row['inserted_chars']} | {row['deleted_chars']} | {row['net_words']} |"
+            )
+    if sites:
+        lines += ["", "### Sites", "", "| Site | + | − | words |", "|---|---:|---:|---:|"]
+        for row in sites:
+            lines.append(
+                f"| {display_name(row['name'])} | {row['inserted_chars']} | {row['deleted_chars']} | {row['net_words']} |"
+            )
+    if herdr:
+        lines += ["", "### Herdr", "", "| Workspace | + | − | words |", "|---|---:|---:|---:|"]
+        for row in herdr:
+            lines.append(
+                f"| {display_name(row['name'])} | {row['inserted_chars']} | {row['deleted_chars']} | {row['net_words']} |"
+            )
+    if hypr:
+        lines += ["", "### Workspaces", "", "| Workspace | + | − | words |", "|---|---:|---:|---:|"]
+        for row in hypr:
+            lines.append(
+                f"| {display_name(row['name'])} | {row['inserted_chars']} | {row['deleted_chars']} | {row['net_words']} |"
             )
     lines += ["", MARKER_END, ""]
     return "\n".join(lines)

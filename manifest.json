@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "jan.wpm",
+  "id": "jandragsbaek.wpm",
   "name": "WPM",
   "version": "0.1.0",
-  "author": "jan",
+  "author": "jandragsbaek",
   "license": "MIT",
   "description": "Live WPM from actual keystrokes, per window, with git-style diffs and a daily Obsidian writing goal.",
   "kinds": [
@@ -22,7 +22,9 @@
     "allowMultiple": false,
     "defaults": {
       "goalWords": 1000,
+      "goalMatch": "obsidian",
       "goalAppClass": "obsidian",
+      "goals": [],
       "dailyNotePath": "",
       "autoExport": false
     },
@@ -31,18 +33,32 @@
         "key": "goalWords",
         "type": "integer",
         "label": "Daily word goal",
-        "description": "Space-separated net words to hit in the goal app each day.",
+        "description": "Net words to hit each day for the primary match.",
         "min": 0,
         "max": 100000,
         "step": 50,
         "defaultValue": 1000
       },
       {
+        "key": "goalMatch",
+        "type": "string",
+        "label": "Goal match",
+        "description": "What to count: a Hyprland class (obsidian), browser site (site:x), herdr workspace (herdr:grok build), activity (activity:grok · grok build), Hyprland workspace (ws:2), or all.",
+        "defaultValue": "obsidian"
+      },
+      {
         "key": "goalAppClass",
         "type": "string",
-        "label": "Goal app class",
-        "description": "Hyprland window class to count toward the goal, usually obsidian.",
+        "label": "Goal app class (legacy)",
+        "description": "Used if Goal match is empty. Prefer Goal match.",
         "defaultValue": "obsidian"
+      },
+      {
+        "key": "goals",
+        "type": "string",
+        "label": "Extra goals (JSON)",
+        "description": "Optional JSON array of {match, words, label} for multiple targets. When set, this list is the full set of goals.",
+        "defaultValue": ""
       },
       {
         "key": "dailyNotePath",

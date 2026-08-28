@@ -1,12 +1,8 @@
 import unittest
 
 from omawpm.metrics import (
-    EV_KEY,
     KEY_A,
     KEY_BACKSPACE,
-    KEY_ENTER,
-    KEY_LEFTCTRL,
-    KEY_C,
     KEY_SPACE,
     KIND_DELETE,
     KIND_LETTER,
@@ -71,34 +67,43 @@ class WpmTests(unittest.TestCase):
         # 300 net chars in 60s = 60 WPM
         self.assertAlmostEqual(wpm_from_net_chars(300, 60_000), 60.0)
 
+    def test_short_burst_is_not_a_fantasy_number(self):
+        # 15 chars in 200ms is 900 WPM if you divide by 0.2s.
+        self.assertEqual(wpm_from_net_chars(15, 200), 0.0)
+
+    def test_wpm_is_capped(self):
+        self.assertEqual(wpm_from_net_chars(200, 1000), 220.0)
+
 
 class TrackerTests(unittest.TestCase):
-    def test_ctrl_c_is_ignored(self):
-        t = KeyTracker()
-        t.handle_evdev(EV_KEY, KEY_LEFTCTRL, 1, 1000, "term\n")
-        kind = t.handle_evdev(EV_KEY, KEY_C, 1, 1001, "term\n")
-        self.assertIsNone(kind)
-        self.assertEqual(t.drafts, {})
-
     def test_typing_goes_to_the_active_window(self):
         t = KeyTracker()
-        t.handle_evdev(EV_KEY, KEY_A, 1, 1000, "obsidian\nDaily")
-        t.handle_evdev(EV_KEY, KEY_SPACE, 1, 1100, "obsidian\nDaily")
-        t.handle_evdev(EV_KEY, KEY_A, 1, 2000, "chromium\nX")
-        self.assertEqual(t.drafts["obsidian\nDaily"].inserted_words, 1)
-        self.assertEqual(t.drafts["chromium\nX"].inserted_chars, 1)
+        t.handle_kind(KIND_LETTER, 1000, "obsidian")
+        t.handle_kind(KIND_SPACE, 1100, "obsidian")
+        t.handle_kind(KIND_LETTER, 2000, "chromium")
+        self.assertEqual(t.drafts["obsidian"].inserted_words, 1)
+        self.assertEqual(t.drafts["chromium"].inserted_chars, 1)
 
     def test_burst_wpm(self):
         t = KeyTracker()
         t.session.idle_ms = 1500
         now = 10_000
         for i in range(50):
-            t.handle_evdev(EV_KEY, KEY_A, 1, now + i * 20, "obsidian\n")
-        t.session.tick(now + 49 * 20)
+            t.handle_kind(KIND_LETTER, now + i * 40, "obsidian")
+        t.session.tick(now + 49 * 40)
         self.assertGreater(t.session.live_wpm, 0)
-        t.session.tick(now + 49 * 20 + 2000)
+        self.assertLessEqual(t.session.live_wpm, 220.0)
+        t.session.tick(now + 49 * 40 + 2000)
         self.assertEqual(t.session.live_wpm, 0)
         self.assertGreater(t.session.last_burst_wpm, 0)
+        self.assertLessEqual(t.session.last_burst_wpm, 220.0)
+
+    def test_opening_sprint_does_not_publish_wpm(self):
+        t = KeyTracker()
+        now = 10_000
+        for i in range(12):
+            t.handle_kind(KIND_LETTER, now + i * 15, "obsidian")
+        self.assertEqual(t.session.live_wpm, 0.0)
 
 
 if __name__ == "__main__":

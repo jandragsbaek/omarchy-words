@@ -12,8 +12,13 @@ from . import config as configmod
 from . import evdev
 from . import export as exportmod
 from . import status as statusmod
+from .activity import Activity, infer_activity
+from .blind import InputFilter
+from .goals import score_goals
+from .herdr import HerdrClient
 from .metrics import KeyTracker
-from .store import Store, day_key, default_db_path
+from .proc import hosts_herdr, infer_ai_agent
+from .store import Store, day_key, default_db_path, minute_of_day
 from .window import read_active_window, session_looks_locked
 
 
@@ -30,12 +35,17 @@ class Daemon:
         self.status_path = status_path or statusmod.default_status_path()
         self.tracker = KeyTracker()
         self.tracker.session.idle_ms = int(self.cfg["burstIdleMs"])
+        self.filter = InputFilter()
         self.fds: list[int] = []
         self.paused = bool(self.cfg["paused"])
         self.state = "starting"
         self.message = "Starting…"
         self.last_window_class = ""
-        self.last_window_title = ""
+        self.last_activity = ""
+        self.last_hypr_workspace = ""
+        self.last_herdr_workspace = ""
+        self.last_site = ""
+        self.herdr = HerdrClient()
         self._last_flush = 0.0
         self._last_status = 0.0
         self._last_export = 0.0
@@ -43,6 +53,7 @@ class Daemon:
         self._window = None
         self._config_mtime = 0.0
         self._day = day_key()
+        self._flush_minute = minute_of_day()
 
     def start_input(self) -> None:
         fds, errors = evdev.open_keyboards()
@@ -82,6 +93,18 @@ class Daemon:
             self._last_window_read = now
         return self._window
 
+    def context_for(self, window) -> Activity:
+        herdr = self.herdr.focus()
+        inside = bool(window.pid and hosts_herdr(window.pid))
+        return infer_activity(
+            window.app_class,
+            window.title,
+            hypr_workspace=window.hypr_workspace,
+            herdr=herdr,
+            hosts_herdr=inside,
+            proc_agent="" if inside else infer_ai_agent(window.pid),
+        )
+
     def rollover_day(self) -> str:
         today = day_key()
         if today != self._day:
@@ -89,82 +112,102 @@ class Daemon:
             for draft in self.tracker.drafts.values():
                 draft.reset_counts()
             self._day = today
+            self._flush_minute = minute_of_day()
         return today
 
     def flush(self, now: float, force: bool = False) -> None:
-        if not force and now - self._last_flush < 2.0:
+        current_minute = minute_of_day()
+        if not force and now - self._last_flush < 2.0 and current_minute == self._flush_minute:
             return
         self._last_flush = now
         day = self._day
+        minute = self._flush_minute
         for key, draft in self.tracker.drafts.items():
             delta = draft.take_delta()
             if not any(delta.values()):
                 continue
-            app_class, _, title = key.partition("\n")
-            self.store.add_delta(day=day, app_class=app_class, app_title=title, **delta)
+            act = Activity.from_key(key)
+            self.store.add_delta(day=day, app_class=act.app_class, app_title="", **delta)
+            self.store.add_minute_delta(
+                day=day,
+                minute=minute,
+                app_class=act.app_class,
+                inserted_chars=delta["inserted_chars"],
+                deleted_chars=delta["deleted_chars"],
+                inserted_words=delta["inserted_words"],
+                deleted_words=delta["deleted_words"],
+                keystrokes=delta["keystrokes"],
+            )
+            slice_kw = {
+                "inserted_chars": delta["inserted_chars"],
+                "deleted_chars": delta["deleted_chars"],
+                "inserted_words": delta["inserted_words"],
+                "deleted_words": delta["deleted_words"],
+                "keystrokes": delta["keystrokes"],
+            }
+            self.store.add_slice_delta(day, "activity", act.activity, minute=minute, **slice_kw)
+            if act.hypr_workspace:
+                self.store.add_slice_delta(day, "hypr", act.hypr_workspace, **slice_kw)
+            if act.herdr_workspace:
+                self.store.add_slice_delta(day, "herdr", act.herdr_workspace, **slice_kw)
+            if act.site:
+                self.store.add_slice_delta(day, "site", act.site, minute=minute, **slice_kw)
+        self._flush_minute = current_minute
         sess = self.tracker.session
         if sess.session_wpm:
             self.store.set_session_wpm(day, sess.session_wpm)
 
-    def _merge_live(self, apps: list[dict[str, Any]], windows: list[dict[str, Any]], goal_app: str, goal: dict[str, Any]) -> None:
+    def _bump(self, rows: list[dict[str, Any]], name_key: str, name: str, extra_key: str, extra: str, delta: dict[str, int]) -> None:
+        if not name:
+            return
+        found = None
+        for row in rows:
+            if row.get(name_key) == name and (not extra_key or row.get(extra_key) == extra):
+                found = row
+                break
+        if found is None:
+            found = {
+                name_key: name,
+                "inserted_chars": 0,
+                "deleted_chars": 0,
+                "inserted_words": 0,
+                "deleted_words": 0,
+                "keystrokes": 0,
+                "typing_ms": 0,
+                "net_chars": 0,
+                "net_words": 0,
+            }
+            if extra_key:
+                found[extra_key] = extra
+            rows.append(found)
+        for field in ("inserted_chars", "deleted_chars", "inserted_words", "deleted_words", "keystrokes"):
+            found[field] = int(found.get(field) or 0) + int(delta.get(field) or 0)
+        found["net_chars"] = max(0, found["inserted_chars"] - found["deleted_chars"])
+        found["net_words"] = max(0, found["inserted_words"] - found["deleted_words"])
+
+    def _merge_live(
+        self,
+        apps: list[dict[str, Any]],
+        windows: list[dict[str, Any]],
+        activities: list[dict[str, Any]],
+        hypr: list[dict[str, Any]],
+        herdr: list[dict[str, Any]],
+        sites: list[dict[str, Any]],
+    ) -> None:
         for key, draft in self.tracker.drafts.items():
             delta = draft.pending_delta()
             if not any(delta.values()):
                 continue
-            app_class, _, title = key.partition("\n")
-            found = None
-            for row in apps:
-                if row["app_class"] == app_class:
-                    found = row
-                    break
-            if found is None:
-                found = {
-                    "app_class": app_class,
-                    "inserted_chars": 0,
-                    "deleted_chars": 0,
-                    "inserted_words": 0,
-                    "deleted_words": 0,
-                    "keystrokes": 0,
-                    "typing_ms": 0,
-                    "net_chars": 0,
-                    "net_words": 0,
-                }
-                apps.append(found)
-            for field in ("inserted_chars", "deleted_chars", "inserted_words", "deleted_words", "keystrokes"):
-                found[field] += delta[field]
-            found["net_chars"] = max(0, found["inserted_chars"] - found["deleted_chars"])
-            found["net_words"] = max(0, found["inserted_words"] - found["deleted_words"])
-            wfound = None
-            for row in windows:
-                if row["app_class"] == app_class and row["title"] == title:
-                    wfound = row
-                    break
-            if wfound is None:
-                wfound = {
-                    "app_class": app_class,
-                    "title": title,
-                    "inserted_chars": 0,
-                    "deleted_chars": 0,
-                    "inserted_words": 0,
-                    "deleted_words": 0,
-                    "net_words": 0,
-                    "net_chars": 0,
-                }
-                windows.append(wfound)
-            for field in ("inserted_chars", "deleted_chars", "inserted_words", "deleted_words"):
-                wfound[field] += delta[field]
-            wfound["net_chars"] = max(0, wfound["inserted_chars"] - wfound["deleted_chars"])
-            wfound["net_words"] = max(0, wfound["inserted_words"] - wfound["deleted_words"])
-            if app_class.lower() == goal_app.lower():
-                goal["inserted_words"] += delta["inserted_words"]
-                goal["deleted_words"] += delta["deleted_words"]
-                goal["net_words"] = max(0, goal["inserted_words"] - goal["deleted_words"])
+            act = Activity.from_key(key)
+            self._bump(apps, "app_class", act.app_class, "", "", delta)
+            self._bump(windows, "app_class", act.app_class, "title", act.title, delta)
+            self._bump(activities, "name", act.activity, "", "", delta)
+            self._bump(hypr, "name", act.hypr_workspace, "", "", delta)
+            self._bump(herdr, "name", act.herdr_workspace, "", "", delta)
+            self._bump(sites, "name", act.site, "", "", delta)
 
     def snapshot(self) -> dict[str, Any]:
         day = day_key()
-        goal_app = str(self.cfg["goalAppClass"])
-        goal_words = int(self.cfg["goalWords"])
-        goal = self.store.goal_progress(day, goal_app)
         apps = self.store.apps_for_day(day)
         windows = [
             {
@@ -179,10 +222,55 @@ class Daemon:
             }
             for w in self.store.windows_for_day(day)
         ]
-        self._merge_live(apps, windows, goal_app, goal)
-        apps.sort(key=lambda r: (-r.get("inserted_words", 0), -r.get("inserted_chars", 0)))
+        activities = self.store.slices_for_day(day, "activity")
+        hypr = self.store.slices_for_day(day, "hypr")
+        herdr = self.store.slices_for_day(day, "herdr")
+        sites = self.store.slices_for_day(day, "site")
+        self._merge_live(apps, windows, activities, hypr, herdr, sites)
+        scored = score_goals(
+            self.cfg, apps, activities, herdr, hypr, self.store.total_for_day(day), sites
+        )
+        goal = scored[0] if scored else {
+            "match": "obsidian",
+            "label": "obsidian",
+            "target": 1000,
+            "net_words": 0,
+            "inserted_words": 0,
+            "deleted_words": 0,
+            "percent": 0,
+        }
+        apps.sort(key=lambda r: (-r.get("net_words", 0), -r.get("inserted_chars", 0)))
+        activities.sort(key=lambda r: (-r.get("net_words", 0), -r.get("inserted_chars", 0)))
+        hypr.sort(key=lambda r: (-r.get("net_words", 0), -r.get("inserted_chars", 0)))
+        herdr.sort(key=lambda r: (-r.get("net_words", 0), -r.get("inserted_chars", 0)))
+        sites.sort(key=lambda r: (-r.get("net_words", 0), -r.get("inserted_chars", 0)))
         cells = self.store.contribution_cells(53)
         max_words = max((c["net_words"] for c in cells), default=0)
+        now_minute = minute_of_day()
+        live_minutes = []
+        for key, draft in self.tracker.drafts.items():
+            delta = draft.pending_delta()
+            if not any(delta.values()):
+                continue
+            act = Activity.from_key(key)
+            live_minutes.append({"app_class": act.activity, "minute": now_minute, **delta})
+        spark_rows = [
+            {
+                "app_class": row["name"],
+                "inserted_chars": row["inserted_chars"],
+                "net_words": row["net_words"],
+            }
+            for row in activities
+        ]
+        sparkline = self.store.sparkline(
+            day,
+            spark_rows,
+            self.last_activity or self.last_window_class,
+            now_minute=now_minute,
+            live=live_minutes,
+            limit=10,
+            minute_rows=self.store.minute_slice_rows(day, "activity"),
+        )
         sess = self.tracker.session
         paused = self.paused or self.state != "running"
         return {
@@ -195,23 +283,33 @@ class Daemon:
             "last_burst_wpm": round(sess.last_burst_wpm, 1),
             "session_wpm": round(sess.session_wpm, 1),
             "active_class": self.last_window_class,
-            "active_title": self.last_window_title,
+            "active_activity": self.last_activity,
+            "active_hypr_workspace": self.last_hypr_workspace,
+            "active_herdr_workspace": self.last_herdr_workspace,
+            "active_site": self.last_site,
             "goal": {
-                "app_class": goal_app,
-                "target": goal_words,
-                "net_words": goal["net_words"],
-                "inserted_words": goal["inserted_words"],
-                "deleted_words": goal["deleted_words"],
-                "percent": 0
-                if goal_words <= 0
-                else min(100, int(round(100 * goal["net_words"] / goal_words))),
+                "app_class": goal.get("match") or goal.get("label") or "obsidian",
+                "match": goal.get("match") or "obsidian",
+                "label": goal.get("label") or goal.get("match") or "obsidian",
+                "target": int(goal.get("target") or 0),
+                "net_words": int(goal.get("net_words") or 0),
+                "inserted_words": int(goal.get("inserted_words") or 0),
+                "deleted_words": int(goal.get("deleted_words") or 0),
+                "percent": int(goal.get("percent") or 0),
             },
+            "goals": scored,
             "apps": apps,
+            "activities": activities,
+            "hypr_workspaces": hypr,
+            "herdr_workspaces": herdr,
+            "sites": sites,
             "windows": windows,
+            "sparkline": sparkline,
             "graph": {"max": max_words, "cells": cells},
             "config": {
-                "goalWords": goal_words,
-                "goalAppClass": goal_app,
+                "goalWords": int(self.cfg.get("goalWords") or 1000),
+                "goalMatch": str(self.cfg.get("goalMatch") or self.cfg.get("goalAppClass") or "obsidian"),
+                "goalAppClass": str(self.cfg.get("goalAppClass") or self.cfg.get("goalMatch") or "obsidian"),
                 "dailyNotePath": self.cfg["dailyNotePath"],
                 "autoExport": self.cfg["autoExport"],
             },
@@ -237,8 +335,8 @@ class Daemon:
         block = exportmod.render_markdown(
             self.store,
             day,
-            int(self.cfg["goalWords"]),
-            str(self.cfg["goalAppClass"]),
+            int(self.cfg.get("goalWords") or 1000),
+            str(self.cfg.get("goalMatch") or self.cfg.get("goalAppClass") or "obsidian"),
             live={
                 "session_wpm": self.tracker.session.session_wpm,
                 "last_burst_wpm": self.tracker.session.last_burst_wpm,
@@ -249,18 +347,19 @@ class Daemon:
     def process_fd(self, fd: int) -> None:
         now = time.time()
         if session_looks_locked() or self.paused:
-            for _ in evdev.iter_events(fd):
+            for _ in evdev.iter_blind(fd, self.filter):
                 pass
             return
         window = self.active_window(now)
+        act = self.context_for(window)
         self.last_window_class = window.app_class
-        self.last_window_title = window.title
-        now_ms = int(now * 1000)
+        self.last_activity = act.activity
+        self.last_hypr_workspace = act.hypr_workspace
+        self.last_herdr_workspace = act.herdr_workspace
+        self.last_site = act.site
         self.rollover_day()
-        for event in evdev.iter_events(fd):
-            self.tracker.handle_evdev(
-                evdev.EV_KEY, event.code, event.value, now_ms, window.key
-            )
+        for stroke in evdev.iter_blind(fd, self.filter):
+            self.tracker.handle_kind(stroke.kind, stroke.now_ms, act.key)
 
     def run(self) -> int:
         self.start_input()
