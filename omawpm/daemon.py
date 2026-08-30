@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import select
 import sys
 import time
 from pathlib import Path
@@ -36,7 +35,7 @@ class Daemon:
         self.tracker = KeyTracker()
         self.tracker.session.idle_ms = int(self.cfg["burstIdleMs"])
         self.filter = InputFilter()
-        self.fds: list[int] = []
+        self.keyboards = evdev.KeyboardDevices()
         self.paused = bool(self.cfg["paused"])
         self.state = "starting"
         self.message = "Starting…"
@@ -54,26 +53,41 @@ class Daemon:
         self._config_mtime = 0.0
         self._day = day_key()
         self._flush_minute = minute_of_day()
+        self._last_rescan = 0.0
 
     def start_input(self) -> None:
-        fds, errors = evdev.open_keyboards()
-        self.fds = fds
-        if not fds:
-            if errors and all("permission denied" in e for e in errors):
-                self.state = "need_input_group"
-                self.message = (
-                    "Cannot read keyboards. Add your user to the input group: "
-                    "sudo usermod -aG input $USER  (then log out and back in)"
-                )
-            elif errors:
-                self.state = "error"
-                self.message = errors[0]
-            else:
-                self.state = "error"
-                self.message = "No keyboard devices found"
+        self._refresh_keyboards()
+        if self.keyboards.fds:
+            self.state = "running"
+            self.message = "Counting"
             return
-        self.state = "running"
-        self.message = "Counting"
+        if self.state == "starting":
+            self.state = "error"
+            self.message = "No keyboard devices found"
+
+    def _refresh_keyboards(self) -> None:
+        self._last_rescan = time.time()
+        before = set(self.keyboards.fds)
+        errors = self.keyboards.rescan()
+        after = set(self.keyboards.fds)
+        if before != after:
+            self.filter.reset()
+        if after:
+            if self.state in {"error", "need_input_group", "starting"}:
+                self.state = "running"
+            if self.state == "running" and not self.paused:
+                self.message = "Counting"
+            return
+        if errors and all("permission denied" in e for e in errors):
+            self.state = "need_input_group"
+            self.message = (
+                "Cannot read keyboards. Add your user to the input group: "
+                "sudo usermod -aG input $USER  (then log out and back in)"
+            )
+        elif self.state in {"running", "starting"}:
+            if self.state == "starting":
+                self.state = "error"
+            self.message = "Waiting for keyboard"
 
     def reload_config(self) -> None:
         try:
@@ -85,7 +99,11 @@ class Daemon:
         self._config_mtime = mtime
         self.cfg = configmod.load_config(self.config_path)
         self.tracker.session.idle_ms = int(self.cfg["burstIdleMs"])
-        self.paused = bool(self.cfg["paused"])
+        paused = bool(self.cfg["paused"])
+        if paused != self.paused:
+            self.tracker.session.reset()
+            self.filter.reset()
+        self.paused = paused
 
     def active_window(self, now: float):
         if self._window is None or now - self._last_window_read > 0.08:
@@ -111,6 +129,7 @@ class Daemon:
             self.flush(time.time(), force=True)
             for draft in self.tracker.drafts.values():
                 draft.reset_counts()
+            self.tracker.session.reset()
             self._day = today
             self._flush_minute = minute_of_day()
         return today
@@ -278,6 +297,7 @@ class Daemon:
             "state": "paused" if self.paused and self.state == "running" else self.state,
             "message": "Paused" if self.paused and self.state == "running" else self.message,
             "paused": paused,
+            "keyboards": len(self.keyboards.fds),
             "day": day,
             "today_words": sum(int(r.get("net_words") or 0) for r in activities),
             "live_wpm": round(sess.live_wpm, 1),
@@ -370,25 +390,37 @@ class Daemon:
             while True:
                 time.sleep(2)
                 self.reload_config()
-                if self.state == "need_input_group":
-                    fds, _ = evdev.open_keyboards()
-                    if fds:
-                        self.fds = fds
-                        self.state = "running"
-                        self.message = "Counting"
-                        break
+                self._refresh_keyboards()
+                if self.state == "running":
+                    break
                 self.write_status(time.time(), force=True)
         try:
             while True:
                 now = time.time()
                 self.reload_config()
-                timeout = 0.2
-                if self.fds:
-                    readable, _, _ = select.select(self.fds, [], [], timeout)
+                timeout_ms = 200
+                if now - self._last_rescan >= 2.0:
+                    self._refresh_keyboards()
+                if self.keyboards.fds:
+                    readable, dead = self.keyboards.poll(timeout_ms)
+                    dead_set = set(dead)
+                    gone = bool(dead)
+                    for fd in dead:
+                        self.keyboards.drop(fd)
                     for fd in readable:
-                        self.process_fd(fd)
+                        if fd in dead_set:
+                            continue
+                        try:
+                            self.process_fd(fd)
+                        except evdev.DeviceGone:
+                            self.keyboards.drop(fd)
+                            gone = True
+                    if gone:
+                        self.filter.reset()
+                        self._refresh_keyboards()
                 else:
-                    time.sleep(timeout)
+                    time.sleep(timeout_ms / 1000)
+                    self._refresh_keyboards()
                 self.rollover_day()
                 self.tracker.session.tick(int(now * 1000))
                 self.flush(now)
@@ -398,7 +430,7 @@ class Daemon:
             self.flush(time.time(), force=True)
             return 0
         finally:
-            evdev.close_fds(self.fds)
+            self.keyboards.close()
             self.store.close()
 
 

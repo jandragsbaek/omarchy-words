@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import glob
 import os
+import select
 import stat
 import struct
 from dataclasses import dataclass
@@ -16,6 +18,14 @@ if TYPE_CHECKING:
 # Native 64-bit Linux input_event: timeval(2×long) + type + code + value.
 EVENT = struct.Struct("llHHi")
 EV_KEY = 1
+
+_DEAD_ERRNOS = {errno.ENODEV, errno.EIO, errno.ENOENT, errno.EBADF}
+_POLL_MASK = select.POLLIN | select.POLLERR | select.POLLHUP | select.POLLNVAL
+_DEAD_MASK = select.POLLERR | select.POLLHUP | select.POLLNVAL
+
+
+class DeviceGone(Exception):
+    """evdev node vanished (unplug, 2.4 GHz reconnect, USB reset)."""
 
 
 @dataclass
@@ -63,9 +73,8 @@ def keyboard_paths() -> list[Path]:
     return parse_handlers()
 
 
-def open_keyboards() -> tuple[list[int], list[str]]:
-    fds: list[int] = []
-    errors: list[str] = []
+def resolved_keyboard_paths() -> list[str]:
+    out: list[str] = []
     seen: set[str] = set()
     for path in keyboard_paths():
         try:
@@ -75,6 +84,31 @@ def open_keyboards() -> tuple[list[int], list[str]]:
         if resolved in seen:
             continue
         seen.add(resolved)
+        out.append(resolved)
+    return out
+
+
+def fd_is_stale(fd: int) -> bool:
+    """True if this fd's device node was replaced or unplugged."""
+    try:
+        link = os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:
+        return True
+    if " (deleted)" in link:
+        return True
+    poller = select.poll()
+    try:
+        poller.register(fd, _POLL_MASK)
+        events = poller.poll(0)
+    except (OSError, ValueError):
+        return True
+    return bool(events) and bool(events[0][1] & _DEAD_MASK)
+
+
+def open_keyboards() -> tuple[list[int], list[str]]:
+    fds: list[int] = []
+    errors: list[str] = []
+    for path in resolved_keyboard_paths():
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         except PermissionError:
@@ -91,6 +125,76 @@ def open_keyboards() -> tuple[list[int], list[str]]:
     return fds, errors
 
 
+class KeyboardDevices:
+    """Open keyboard fds, drop vanished nodes, pick up reconnects."""
+
+    def __init__(self) -> None:
+        self.fds: list[int] = []
+        self.paths: dict[int, str] = {}
+        self._poll = select.poll()
+
+    def rescan(self) -> list[str]:
+        errors: list[str] = []
+        wanted = resolved_keyboard_paths()
+        wanted_set = set(wanted)
+        for fd in list(self.fds):
+            path = self.paths.get(fd, "")
+            if fd_is_stale(fd) or path not in wanted_set:
+                self.drop(fd)
+        held = set(self.paths.values())
+        for path in wanted:
+            if path in held:
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            except PermissionError:
+                errors.append(f"permission denied: {path}")
+                continue
+            except OSError as exc:
+                errors.append(f"{path}: {exc}")
+                continue
+            mode = os.fstat(fd).st_mode
+            if not stat.S_ISCHR(mode):
+                os.close(fd)
+                continue
+            self.fds.append(fd)
+            self.paths[fd] = path
+            self._poll.register(fd, _POLL_MASK)
+        return errors
+
+    def drop(self, fd: int) -> None:
+        try:
+            self._poll.unregister(fd)
+        except (OSError, KeyError, ValueError):
+            pass
+        if fd in self.fds:
+            self.fds.remove(fd)
+        self.paths.pop(fd, None)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    def poll(self, timeout_ms: int) -> tuple[list[int], list[int]]:
+        """Return (readable fds, dead fds)."""
+        try:
+            events = self._poll.poll(timeout_ms)
+        except OSError:
+            return [], list(self.fds)
+        readable: list[int] = []
+        dead: list[int] = []
+        for fd, flags in events:
+            if flags & _DEAD_MASK:
+                dead.append(fd)
+            elif flags & select.POLLIN:
+                readable.append(fd)
+        return readable, dead
+
+    def close(self) -> None:
+        for fd in list(self.fds):
+            self.drop(fd)
+
+
 def iter_blind(fd: int, filt: "InputFilter") -> Iterator[BlindStroke]:
     """Read evdev, classify, forget the scancode, yield only kinds."""
     while True:
@@ -98,10 +202,12 @@ def iter_blind(fd: int, filt: "InputFilter") -> Iterator[BlindStroke]:
             buf = os.read(fd, EVENT.size)
         except BlockingIOError:
             return
-        except OSError:
+        except OSError as exc:
+            if exc.errno in _DEAD_ERRNOS:
+                raise DeviceGone() from exc
             return
         if not buf:
-            return
+            raise DeviceGone()
         if len(buf) != EVENT.size:
             return
         sec, usec, ev_type, code, value = EVENT.unpack(buf)

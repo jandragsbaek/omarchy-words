@@ -32,6 +32,13 @@ class FilterTests(unittest.TestCase):
         self.assertIsNone(filt.consider(EV_KEY, KEY_LEFTMETA, 1))
         self.assertIsNone(filt.consider(EV_KEY, KEY_A, 1))
 
+    def test_reset_clears_stuck_modifiers(self):
+        filt = InputFilter()
+        filt.consider(EV_KEY, KEY_LEFTCTRL, 1)
+        self.assertIsNone(filt.consider(EV_KEY, KEY_C, 1))
+        filt.reset()
+        self.assertEqual(filt.consider(EV_KEY, KEY_C, 1), KIND_LETTER)
+
     def test_blind_stroke_has_no_scancode(self):
         stroke = BlindStroke(kind=KIND_LETTER, now_ms=1)
         self.assertFalse(hasattr(stroke, "code"))

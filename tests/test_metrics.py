@@ -105,6 +105,19 @@ class TrackerTests(unittest.TestCase):
             t.handle_kind(KIND_LETTER, now + i * 15, "obsidian")
         self.assertEqual(t.session.live_wpm, 0.0)
 
+    def test_session_reset_clears_wpm(self):
+        t = KeyTracker()
+        now = 10_000
+        for i in range(50):
+            t.handle_kind(KIND_LETTER, now + i * 40, "obsidian")
+        t.session.tick(now + 49 * 40 + 2000)
+        self.assertGreater(t.session.session_wpm, 0)
+        t.session.reset()
+        self.assertEqual(t.session.session_wpm, 0.0)
+        self.assertEqual(t.session.live_wpm, 0.0)
+        self.assertEqual(t.session.last_burst_wpm, 0.0)
+        self.assertIsNone(t.session.burst)
+
 
 if __name__ == "__main__":
     unittest.main()

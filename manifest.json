@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jandragsbaek.words",
   "name": "Words",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "jandragsbaek",
   "license": "MIT",
   "description": "Word counts from actual keystrokes, per window and site, with live WPM, goals, and git-style diffs.",

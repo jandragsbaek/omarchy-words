@@ -29,6 +29,9 @@ class InputFilter:
     def __init__(self) -> None:
         self._mods: set[int] = set()
 
+    def reset(self) -> None:
+        self._mods.clear()
+
     def consider(self, ev_type: int, code: int, value: int) -> str | None:
         if ev_type != EV_KEY:
             return None

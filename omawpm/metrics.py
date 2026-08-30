@@ -329,6 +329,15 @@ class Session:
         if sample > 0:
             self.live_wpm = sample
 
+    def reset(self) -> None:
+        self.burst = None
+        self.last_burst_wpm = 0.0
+        self.last_burst_accuracy = 100.0
+        self.session_inserted = 0
+        self.session_deleted = 0
+        self.session_typing_ms = 0
+        self.live_wpm = 0.0
+
     def tick(self, now_ms: int) -> None:
         if self.burst and now_ms - self.burst.last_ms > self.idle_ms:
             self._close_burst(now_ms)
